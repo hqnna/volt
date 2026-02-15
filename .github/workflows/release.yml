@@ -1,0 +1,73 @@
+name: Build Static Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: volt-x86_64-linux
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact: volt-aarch64-linux
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: volt-x86_64-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: volt-aarch64-darwin
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build static binary (Linux)
+        if: contains(matrix.target, 'linux')
+        run: nix build .#volt-static
+
+      - name: Build binary (macOS)
+        if: contains(matrix.target, 'darwin')
+        run: nix build .#volt
+
+      - name: Prepare artifact
+        run: |
+          cp result/bin/volt ${{ matrix.artifact }}
+          chmod +x ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
