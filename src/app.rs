@@ -11,6 +11,17 @@ pub enum Focus {
     Settings,
 }
 
+/// A request to open an external editor, returned from app methods.
+#[derive(Debug, Clone)]
+pub struct EditorRequest {
+    /// The setting key being edited.
+    pub key: String,
+    /// The current value to edit.
+    pub value: Value,
+    /// For array<object>, the index of the item being edited.
+    pub array_index: Option<usize>,
+}
+
 /// Application state.
 pub struct App {
     pub config: Config,
@@ -115,11 +126,10 @@ impl App {
     }
 
     /// Handles Enter key on the currently selected setting.
-    pub fn activate_setting(&mut self) {
+    /// Returns an `EditorRequest` if the setting needs to be opened in `$EDITOR`.
+    pub fn activate_setting(&mut self) -> Option<EditorRequest> {
         let entries = self.current_settings();
-        let Some(entry) = entries.get(self.selected_setting) else {
-            return;
-        };
+        let entry = entries.get(self.selected_setting)?;
 
         match entry {
             SettingEntry::Known(def) => match def.setting_type {
@@ -127,6 +137,7 @@ impl App {
                     let current = self.config.get(def.key);
                     let toggled = !current.as_bool().unwrap_or(false);
                     self.config.set(def.key, Value::Bool(toggled));
+                    None
                 }
                 SettingType::String | SettingType::Number => {
                     self.editing = true;
@@ -136,13 +147,141 @@ impl App {
                         Value::Number(n) => n.to_string(),
                         _ => String::new(),
                     };
+                    None
                 }
                 SettingType::StringEnum => {
                     self.cycle_enum(def);
+                    None
                 }
-                _ => {}
+                SettingType::Object => Some(EditorRequest {
+                    key: def.key.to_string(),
+                    value: self.config.get(def.key),
+                    array_index: None,
+                }),
+                SettingType::ArrayObject => {
+                    let arr = self.config.get(def.key);
+                    let items = arr.as_array().cloned().unwrap_or_default();
+                    if items.is_empty() {
+                        self.status_message =
+                            Some("Empty array. Press 'a' to add an item.".to_string());
+                        None
+                    } else {
+                        let idx = 0;
+                        Some(EditorRequest {
+                            key: def.key.to_string(),
+                            value: items[idx].clone(),
+                            array_index: Some(idx),
+                        })
+                    }
+                }
+                SettingType::ArrayString => {
+                    self.status_message =
+                        Some("Press 'a' to add, 'd' to delete items.".to_string());
+                    None
+                }
             },
-            SettingEntry::Unknown(_) => {}
+            SettingEntry::Unknown(key) => {
+                let value = self.config.get(key);
+                Some(EditorRequest {
+                    key: key.clone(),
+                    value,
+                    array_index: None,
+                })
+            }
+        }
+    }
+
+    /// Forces opening the current setting in `$EDITOR`.
+    pub fn force_editor(&self) -> Option<EditorRequest> {
+        let entries = self.current_settings();
+        let entry = entries.get(self.selected_setting)?;
+
+        let (key, value) = match entry {
+            SettingEntry::Known(def) => (def.key.to_string(), self.config.get(def.key)),
+            SettingEntry::Unknown(key) => (key.clone(), self.config.get(key)),
+        };
+
+        Some(EditorRequest {
+            key,
+            value,
+            array_index: None,
+        })
+    }
+
+    /// Applies the result from an external editor back to the config.
+    pub fn apply_editor_result(&mut self, request: &EditorRequest, edited: Value) {
+        match request.array_index {
+            Some(idx) => {
+                let mut arr = self
+                    .config
+                    .get(&request.key)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if idx < arr.len() {
+                    arr[idx] = edited;
+                }
+                self.config.set(&request.key, Value::Array(arr));
+            }
+            None => {
+                self.config.set(&request.key, edited);
+            }
+        }
+        self.status_message = Some(format!("Updated {}", request.key));
+    }
+
+    /// Adds an item to a string array setting (prompts for value via edit buffer).
+    pub fn add_array_item(&mut self) {
+        let entries = self.current_settings();
+        let Some(entry) = entries.get(self.selected_setting) else {
+            return;
+        };
+
+        let SettingEntry::Known(def) = entry else {
+            return;
+        };
+
+        match def.setting_type {
+            SettingType::ArrayString => {
+                self.editing = true;
+                self.edit_buffer.clear();
+            }
+            SettingType::ArrayObject => {
+                self.editing = true;
+                self.edit_buffer.clear();
+            }
+            _ => {}
+        }
+    }
+
+    /// Deletes the last item from an array setting.
+    pub fn delete_array_item(&mut self) {
+        let entries = self.current_settings();
+        let Some(entry) = entries.get(self.selected_setting) else {
+            return;
+        };
+
+        let SettingEntry::Known(def) = entry else {
+            return;
+        };
+
+        match def.setting_type {
+            SettingType::ArrayString | SettingType::ArrayObject => {
+                let mut arr = self
+                    .config
+                    .get(def.key)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if arr.is_empty() {
+                    self.status_message = Some("Array is already empty.".to_string());
+                } else {
+                    arr.pop();
+                    self.config.set(def.key, Value::Array(arr));
+                    self.status_message = Some(format!("Removed last item from {}", def.key));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -177,6 +316,50 @@ impl App {
         let SettingEntry::Known(def) = entry else {
             return;
         };
+
+        match def.setting_type {
+            SettingType::ArrayString => {
+                if !self.edit_buffer.is_empty() {
+                    let mut arr = self
+                        .config
+                        .get(def.key)
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    arr.push(Value::String(self.edit_buffer.clone()));
+                    self.config.set(def.key, Value::Array(arr));
+                    self.status_message = Some(format!("Added item to {}", def.key));
+                }
+                self.edit_buffer.clear();
+                return;
+            }
+            SettingType::ArrayObject => {
+                if !self.edit_buffer.is_empty() {
+                    match serde_json::from_str::<Value>(&self.edit_buffer) {
+                        Ok(val) if val.is_object() => {
+                            let mut arr = self
+                                .config
+                                .get(def.key)
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
+                            arr.push(val);
+                            self.config.set(def.key, Value::Array(arr));
+                            self.status_message = Some(format!("Added item to {}", def.key));
+                        }
+                        Ok(_) => {
+                            self.status_message = Some("Value must be a JSON object".to_string());
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Invalid JSON: {e}"));
+                        }
+                    }
+                }
+                self.edit_buffer.clear();
+                return;
+            }
+            _ => {}
+        }
 
         let value = match def.setting_type {
             SettingType::Number => {
@@ -475,5 +658,149 @@ mod tests {
         app.cancel_edit();
         assert!(!app.editing);
         assert!(app.edit_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_object_returns_editor_request() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        let entries = app.current_settings();
+        let idx = entries
+            .iter()
+            .position(|e| matches!(e, SettingEntry::Known(d) if d.key == "amp.defaultVisibility"))
+            .unwrap();
+        app.selected_setting = idx;
+
+        let req = app.activate_setting();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.defaultVisibility");
+        assert!(req.array_index.is_none());
+    }
+
+    #[test]
+    fn test_array_string_add_item() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        let entries = app.current_settings();
+        let idx = entries
+            .iter()
+            .position(
+                |e| matches!(e, SettingEntry::Known(d) if d.key == "amp.fuzzy.alwaysIncludePaths"),
+            )
+            .unwrap();
+        app.selected_setting = idx;
+
+        app.add_array_item();
+        assert!(app.editing);
+        app.edit_buffer = "*.rs".to_string();
+        app.commit_edit();
+        assert!(!app.editing);
+        assert_eq!(
+            app.config.get("amp.fuzzy.alwaysIncludePaths"),
+            Value::Array(vec![Value::String("*.rs".into())])
+        );
+    }
+
+    #[test]
+    fn test_array_string_delete_item() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        app.config.set(
+            "amp.fuzzy.alwaysIncludePaths",
+            Value::Array(vec![Value::String("a".into()), Value::String("b".into())]),
+        );
+        let entries = app.current_settings();
+        let idx = entries
+            .iter()
+            .position(
+                |e| matches!(e, SettingEntry::Known(d) if d.key == "amp.fuzzy.alwaysIncludePaths"),
+            )
+            .unwrap();
+        app.selected_setting = idx;
+
+        app.delete_array_item();
+        assert_eq!(
+            app.config.get("amp.fuzzy.alwaysIncludePaths"),
+            Value::Array(vec![Value::String("a".into())])
+        );
+    }
+
+    #[test]
+    fn test_delete_empty_array() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        let entries = app.current_settings();
+        let idx = entries
+            .iter()
+            .position(
+                |e| matches!(e, SettingEntry::Known(d) if d.key == "amp.fuzzy.alwaysIncludePaths"),
+            )
+            .unwrap();
+        app.selected_setting = idx;
+
+        app.delete_array_item();
+        assert!(app.status_message.is_some());
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_force_editor() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        // Any setting should produce an EditorRequest
+        let req = app.force_editor();
+        assert!(req.is_some());
+    }
+
+    #[test]
+    fn test_apply_editor_result() {
+        let mut app = test_app();
+        let req = EditorRequest {
+            key: "amp.defaultVisibility".to_string(),
+            value: Value::Object(serde_json::Map::new()),
+            array_index: None,
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("origin".into(), Value::String("private".into()));
+        app.apply_editor_result(&req, Value::Object(map));
+        let val = app.config.get("amp.defaultVisibility");
+        assert!(val.is_object());
+        assert_eq!(val["origin"], Value::String("private".into()));
+    }
+
+    #[test]
+    fn test_apply_editor_result_array_index() {
+        let mut app = test_app();
+        app.config.set(
+            "amp.permissions",
+            Value::Array(vec![Value::Object(serde_json::Map::new())]),
+        );
+        let req = EditorRequest {
+            key: "amp.permissions".to_string(),
+            value: Value::Object(serde_json::Map::new()),
+            array_index: Some(0),
+        };
+        let mut edited = serde_json::Map::new();
+        edited.insert("tool".into(), Value::String("Bash".into()));
+        app.apply_editor_result(&req, Value::Object(edited));
+        let arr = app.config.get("amp.permissions");
+        assert_eq!(
+            arr.as_array().unwrap()[0]["tool"],
+            Value::String("Bash".into())
+        );
+    }
+
+    #[test]
+    fn test_unknown_key_returns_editor_request() {
+        let mut app = test_app();
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+        let entries = app.current_settings();
+        assert!(!entries.is_empty());
+        app.selected_setting = 0;
+        let req = app.activate_setting();
+        assert!(req.is_some());
+        assert_eq!(req.unwrap().key, "amp.experimental.modes");
     }
 }

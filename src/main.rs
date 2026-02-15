@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod editor;
 mod settings;
 mod ui;
 
@@ -18,7 +19,7 @@ use crossterm::ExecutableCommand;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 
-use app::{App, Focus};
+use app::{App, EditorRequest, Focus};
 use config::Config;
 
 /// Volt — TUI Settings Editor for Amp
@@ -71,7 +72,10 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App
             if app.editing {
                 handle_edit_input(app, key.code);
             } else {
-                handle_normal_input(app, key.code, key.modifiers);
+                let editor_req = handle_normal_input(app, key.code, key.modifiers);
+                if let Some(req) = editor_req {
+                    run_editor(terminal, app, &req)?;
+                }
             }
         }
 
@@ -79,6 +83,31 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App
             return Ok(());
         }
     }
+}
+
+/// Suspends the TUI, runs `$EDITOR`, and applies the result.
+fn run_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    request: &EditorRequest,
+) -> Result<()> {
+    // Suspend TUI
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+
+    let result = editor::edit_value_in_editor(&request.value);
+
+    // Restore TUI
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    match result {
+        Ok(edited) => app.apply_editor_result(request, edited),
+        Err(e) => app.status_message = Some(format!("Editor error: {e}")),
+    }
+
+    Ok(())
 }
 
 fn handle_edit_input(app: &mut App, key: KeyCode) {
@@ -95,30 +124,69 @@ fn handle_edit_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_normal_input(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
+fn handle_normal_input(
+    app: &mut App,
+    key: KeyCode,
+    modifiers: KeyModifiers,
+) -> Option<EditorRequest> {
     match key {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+            None
+        }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
+            None
         }
-        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-        KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.move_up();
+            None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.move_down();
+            None
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.toggle_focus();
+            None
+        }
         KeyCode::Enter => {
             if app.focus == Focus::Settings {
-                app.activate_setting();
+                app.activate_setting()
             } else {
                 app.toggle_focus();
+                None
             }
+        }
+        KeyCode::Char('e') => {
+            if app.focus == Focus::Settings {
+                app.force_editor()
+            } else {
+                None
+            }
+        }
+        KeyCode::Char('a') => {
+            if app.focus == Focus::Settings {
+                app.add_array_item();
+            }
+            None
+        }
+        KeyCode::Char('d') => {
+            if app.focus == Focus::Settings {
+                app.delete_array_item();
+            }
+            None
         }
         KeyCode::Char('r') => {
             if app.focus == Focus::Settings {
                 app.reset_setting();
             }
+            None
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.save();
+            None
         }
-        _ => {}
+        _ => None,
     }
 }
