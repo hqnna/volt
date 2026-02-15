@@ -190,7 +190,18 @@ fn format_value(setting_type: SettingType, value: &Value) -> String {
             }
             None => "0".to_string(),
         },
-        SettingType::ArrayString | SettingType::ArrayObject => {
+        SettingType::ArrayString => {
+            let arr = value.as_array();
+            match arr {
+                Some(a) if a.is_empty() => "[]".to_string(),
+                Some(a) => {
+                    let items: Vec<&str> = a.iter().filter_map(|v| v.as_str()).collect();
+                    format!("[{}]", items.join(", "))
+                }
+                None => "[]".to_string(),
+            }
+        }
+        SettingType::ArrayObject => {
             let arr = value.as_array();
             match arr {
                 Some(a) if a.is_empty() => "[]".to_string(),
@@ -331,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_value_array() {
+    fn test_format_value_array_string() {
         assert_eq!(
             format_value(SettingType::ArrayString, &Value::Array(vec![])),
             "[]"
@@ -341,7 +352,22 @@ mod tests {
                 SettingType::ArrayString,
                 &Value::Array(vec![Value::String("a".into()), Value::String("b".into())])
             ),
-            "[2 items]"
+            "[a, b]"
+        );
+    }
+
+    #[test]
+    fn test_format_value_array_object() {
+        assert_eq!(
+            format_value(SettingType::ArrayObject, &Value::Array(vec![])),
+            "[]"
+        );
+        assert_eq!(
+            format_value(
+                SettingType::ArrayObject,
+                &Value::Array(vec![Value::Object(serde_json::Map::new())])
+            ),
+            "[1 items]"
         );
     }
 
