@@ -53,6 +53,11 @@ impl Section {
             Section::Advanced => "Advanced",
         }
     }
+
+    /// Returns whether this section has exactly one setting (rendered as a full editor).
+    pub fn is_single_key(self) -> bool {
+        matches!(self, Section::Permissions)
+    }
 }
 
 /// Theme options for `amp.terminal.theme`.
@@ -332,5 +337,14 @@ mod tests {
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), settings.len(), "Duplicate keys found");
+    }
+
+    #[test]
+    fn test_is_single_key() {
+        assert!(Section::Permissions.is_single_key());
+        assert!(!Section::General.is_single_key());
+        assert!(!Section::Tools.is_single_key());
+        assert!(!Section::Mcps.is_single_key());
+        assert!(!Section::Advanced.is_single_key());
     }
 }

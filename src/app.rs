@@ -79,7 +79,22 @@ impl App {
 
     /// Returns the number of items in the current section.
     pub fn current_item_count(&self) -> usize {
-        self.current_settings().len()
+        if self.current_section().is_single_key() {
+            self.single_key_item_count()
+        } else {
+            self.current_settings().len()
+        }
+    }
+
+    /// Returns the number of array items for a single-key section.
+    fn single_key_item_count(&self) -> usize {
+        let entries = self.current_settings();
+        match entries.first() {
+            Some(SettingEntry::Known(def)) => {
+                self.config.get(def.key).as_array().map_or(0, |a| a.len())
+            }
+            _ => 0,
+        }
     }
 
     /// Moves selection up in the current panel.
@@ -128,6 +143,10 @@ impl App {
     /// Handles Enter key on the currently selected setting.
     /// Returns an `EditorRequest` if the setting needs to be opened in `$EDITOR`.
     pub fn activate_setting(&mut self) -> Option<EditorRequest> {
+        if self.current_section().is_single_key() {
+            return self.activate_single_key_item();
+        }
+
         let entries = self.current_settings();
         let entry = entries.get(self.selected_setting)?;
 
@@ -191,10 +210,31 @@ impl App {
         }
     }
 
+    /// Activates the selected array item in a single-key section.
+    fn activate_single_key_item(&self) -> Option<EditorRequest> {
+        let entries = self.current_settings();
+        let def = match entries.first() {
+            Some(SettingEntry::Known(def)) => def,
+            _ => return None,
+        };
+        let arr = self.config.get(def.key);
+        let items = arr.as_array().cloned().unwrap_or_default();
+        let item = items.get(self.selected_setting)?;
+        Some(EditorRequest {
+            key: def.key.to_string(),
+            value: item.clone(),
+            array_index: Some(self.selected_setting),
+        })
+    }
+
     /// Forces opening the current setting in `$EDITOR`.
     pub fn force_editor(&self) -> Option<EditorRequest> {
         let entries = self.current_settings();
-        let entry = entries.get(self.selected_setting)?;
+        let entry = if self.current_section().is_single_key() {
+            entries.first()?
+        } else {
+            entries.get(self.selected_setting)?
+        };
 
         let (key, value) = match entry {
             SettingEntry::Known(def) => (def.key.to_string(), self.config.get(def.key)),
@@ -232,21 +272,13 @@ impl App {
 
     /// Adds an item to a string array setting (prompts for value via edit buffer).
     pub fn add_array_item(&mut self) {
-        let entries = self.current_settings();
-        let Some(entry) = entries.get(self.selected_setting) else {
-            return;
-        };
-
-        let SettingEntry::Known(def) = entry else {
+        let def = self.selected_array_def();
+        let Some(def) = def else {
             return;
         };
 
         match def.setting_type {
-            SettingType::ArrayString => {
-                self.editing = true;
-                self.edit_buffer.clear();
-            }
-            SettingType::ArrayObject => {
+            SettingType::ArrayString | SettingType::ArrayObject => {
                 self.editing = true;
                 self.edit_buffer.clear();
             }
@@ -254,14 +286,12 @@ impl App {
         }
     }
 
-    /// Deletes the last item from an array setting.
+    /// Deletes an item from an array setting.
+    /// In single-key sections, deletes the selected item; otherwise deletes the last.
     pub fn delete_array_item(&mut self) {
-        let entries = self.current_settings();
-        let Some(entry) = entries.get(self.selected_setting) else {
-            return;
-        };
-
-        let SettingEntry::Known(def) = entry else {
+        let section = self.current_section();
+        let def = self.selected_array_def();
+        let Some(def) = def else {
             return;
         };
 
@@ -275,6 +305,14 @@ impl App {
                     .unwrap_or_default();
                 if arr.is_empty() {
                     self.status_message = Some("Array is already empty.".to_string());
+                } else if section.is_single_key() {
+                    let idx = self.selected_setting.min(arr.len() - 1);
+                    arr.remove(idx);
+                    self.config.set(def.key, Value::Array(arr.clone()));
+                    self.status_message = Some(format!("Removed item {} from {}", idx, def.key));
+                    if !arr.is_empty() && self.selected_setting >= arr.len() {
+                        self.selected_setting = arr.len() - 1;
+                    }
                 } else {
                     arr.pop();
                     self.config.set(def.key, Value::Array(arr));
@@ -282,6 +320,29 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Returns the SettingDef for the currently selected array setting.
+    /// In single-key sections, returns the section's only setting.
+    /// In multi-key sections, returns the selected setting if it's an array type.
+    fn selected_array_def(&self) -> Option<settings::SettingDef> {
+        let entries = self.current_settings();
+        let entry = if self.current_section().is_single_key() {
+            entries.first()
+        } else {
+            entries.get(self.selected_setting)
+        };
+        match entry {
+            Some(SettingEntry::Known(def))
+                if matches!(
+                    def.setting_type,
+                    SettingType::ArrayString | SettingType::ArrayObject
+                ) =>
+            {
+                Some(def.clone())
+            }
+            _ => None,
         }
     }
 
@@ -309,7 +370,12 @@ impl App {
         self.editing = false;
 
         let entries = self.current_settings();
-        let Some(entry) = entries.get(self.selected_setting) else {
+        let entry = if self.current_section().is_single_key() {
+            entries.first()
+        } else {
+            entries.get(self.selected_setting)
+        };
+        let Some(entry) = entry else {
             return;
         };
 
@@ -398,7 +464,12 @@ impl App {
     /// Resets the currently selected setting to its default.
     pub fn reset_setting(&mut self) {
         let entries = self.current_settings();
-        let Some(entry) = entries.get(self.selected_setting) else {
+        let entry = if self.current_section().is_single_key() {
+            entries.first()
+        } else {
+            entries.get(self.selected_setting)
+        };
+        let Some(entry) = entry else {
             return;
         };
 
@@ -406,6 +477,9 @@ impl App {
             SettingEntry::Known(def) => {
                 self.config.remove(def.key);
                 self.status_message = Some(format!("Reset {} to default", def.key));
+                if self.current_section().is_single_key() {
+                    self.selected_setting = 0;
+                }
             }
             SettingEntry::Unknown(key) => {
                 self.config.remove(key);
@@ -802,5 +876,98 @@ mod tests {
         let req = app.activate_setting();
         assert!(req.is_some());
         assert_eq!(req.unwrap().key, "amp.experimental.modes");
+    }
+
+    fn test_app_with_permissions() -> App {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"{{
+    "amp.permissions": [
+        {{"tool": "Bash", "decision": "allow"}},
+        {{"tool": "Read", "decision": "allow"}},
+        {{"tool": "edit_file", "decision": "ask"}}
+    ]
+}}"#
+        )
+        .unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
+        app.selected_section = 1; // Permissions
+        app
+    }
+
+    #[test]
+    fn test_single_key_item_count() {
+        let app = test_app_with_permissions();
+        assert_eq!(app.current_section(), Section::Permissions);
+        assert_eq!(app.current_item_count(), 3);
+    }
+
+    #[test]
+    fn test_single_key_navigate_items() {
+        let mut app = test_app_with_permissions();
+        app.focus = Focus::Settings;
+        assert_eq!(app.selected_setting, 0);
+        app.move_down();
+        assert_eq!(app.selected_setting, 1);
+        app.move_down();
+        assert_eq!(app.selected_setting, 2);
+        app.move_down();
+        assert_eq!(app.selected_setting, 2); // stays at last
+    }
+
+    #[test]
+    fn test_single_key_activate_opens_item() {
+        let mut app = test_app_with_permissions();
+        app.focus = Focus::Settings;
+        app.selected_setting = 1;
+        let req = app.activate_setting();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.permissions");
+        assert_eq!(req.array_index, Some(1));
+        assert_eq!(req.value["tool"], Value::String("Read".into()));
+    }
+
+    #[test]
+    fn test_single_key_delete_selected_item() {
+        let mut app = test_app_with_permissions();
+        app.focus = Focus::Settings;
+        app.selected_setting = 1; // "Read" item
+        app.delete_array_item();
+        assert_eq!(app.current_item_count(), 2);
+        // The remaining items should be Bash and edit_file
+        let arr = app.config.get("amp.permissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items[0]["tool"], Value::String("Bash".into()));
+        assert_eq!(items[1]["tool"], Value::String("edit_file".into()));
+    }
+
+    #[test]
+    fn test_single_key_delete_last_adjusts_selection() {
+        let mut app = test_app_with_permissions();
+        app.focus = Focus::Settings;
+        app.selected_setting = 2; // last item
+        app.delete_array_item();
+        assert_eq!(app.current_item_count(), 2);
+        assert_eq!(app.selected_setting, 1); // adjusted
+    }
+
+    #[test]
+    fn test_single_key_empty_item_count() {
+        let mut app = test_app();
+        app.selected_section = 1; // Permissions
+        assert_eq!(app.current_item_count(), 0);
+    }
+
+    #[test]
+    fn test_single_key_reset_clears_array() {
+        let mut app = test_app_with_permissions();
+        app.focus = Focus::Settings;
+        app.selected_setting = 1;
+        app.reset_setting();
+        assert_eq!(app.current_item_count(), 0);
+        assert_eq!(app.selected_setting, 0);
     }
 }

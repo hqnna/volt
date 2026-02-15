@@ -90,6 +90,11 @@ fn render_settings_panel(frame: &mut Frame, app: &App, area: Rect) {
             Color::DarkGray
         }));
 
+    if section.is_single_key() {
+        render_single_key_panel(frame, app, area, block);
+        return;
+    }
+
     let entries = app.current_settings();
 
     if entries.is_empty() {
@@ -162,6 +167,55 @@ fn render_settings_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(table, area);
 }
 
+/// Renders a single-key section where the right panel shows array items directly.
+fn render_single_key_panel(frame: &mut Frame, app: &App, area: Rect, block: Block) {
+    let entries = app.current_settings();
+    let def = match entries.first() {
+        Some(SettingEntry::Known(def)) => def,
+        _ => {
+            let p = Paragraph::new("No settings in this section.")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(block);
+            frame.render_widget(p, area);
+            return;
+        }
+    };
+
+    let value = app.config.get(def.key);
+    let items = value.as_array().cloned().unwrap_or_default();
+
+    if items.is_empty() {
+        let p = Paragraph::new(" Empty. Press 'a' to add an item, 'e' to open in $EDITOR.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        frame.render_widget(p, area);
+        return;
+    }
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = app.focus == Focus::Settings && i == app.selected_setting;
+            let style = if is_selected {
+                selected_style
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let text = format_array_item(item);
+            ListItem::new(format!(" {text}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(list_items).block(block);
+    frame.render_widget(list, area);
+}
+
 /// Formats a value for display based on its type.
 fn format_value(setting_type: SettingType, value: &Value) -> String {
     match setting_type {
@@ -220,6 +274,27 @@ fn format_value(setting_type: SettingType, value: &Value) -> String {
     }
 }
 
+/// Formats a single array item for display in single-key sections.
+fn format_array_item(value: &Value) -> String {
+    match value {
+        Value::Object(obj) => {
+            let pairs: Vec<String> = obj
+                .iter()
+                .map(|(k, v)| {
+                    let v_str = match v {
+                        Value::String(s) => format!("\"{s}\""),
+                        other => other.to_string(),
+                    };
+                    format!("{k}: {v_str}")
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Formats a JSON value compactly for display.
 fn format_json_compact(value: &Value) -> String {
     match value {
@@ -262,8 +337,12 @@ fn render_bottom_bar(frame: &mut Frame, app: &App, area: Rect) {
 fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
     let text = if app.focus == Focus::Settings {
         let entries = app.current_settings();
-        entries
-            .get(app.selected_setting)
+        let entry = if app.current_section().is_single_key() {
+            entries.first()
+        } else {
+            entries.get(app.selected_setting)
+        };
+        entry
             .map(|entry| match entry {
                 SettingEntry::Known(def) => {
                     format!(" {} — {}", def.key, def.description)
@@ -377,6 +456,28 @@ mod tests {
             format_value(SettingType::Object, &Value::Object(serde_json::Map::new())),
             "{}"
         );
+    }
+
+    #[test]
+    fn test_format_array_item_object() {
+        let mut obj = serde_json::Map::new();
+        obj.insert("tool".into(), Value::String("Bash".into()));
+        obj.insert("decision".into(), Value::String("allow".into()));
+        let result = format_array_item(&Value::Object(obj));
+        assert!(result.starts_with('{'));
+        assert!(result.contains("tool: \"Bash\""));
+        assert!(result.contains("decision: \"allow\""));
+    }
+
+    #[test]
+    fn test_format_array_item_string() {
+        assert_eq!(format_array_item(&Value::String("hello".into())), "hello");
+    }
+
+    #[test]
+    fn test_format_array_item_other() {
+        assert_eq!(format_array_item(&Value::Bool(true)), "true");
+        assert_eq!(format_array_item(&Value::Number(42.into())), "42");
     }
 
     #[test]
