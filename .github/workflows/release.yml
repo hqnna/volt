@@ -28,9 +28,6 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Build static binary (Linux)
         if: contains(matrix.target, 'linux')
         run: nix build .#volt-static
