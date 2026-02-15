@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 use serde_json::Value;
 
@@ -105,60 +105,61 @@ fn render_settings_panel(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = entries
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let rows: Vec<Row> = entries
         .iter()
         .enumerate()
         .map(|(i, entry)| {
             let is_selected = app.focus == Focus::Settings && i == app.selected_setting;
-            render_setting_item(app, entry, is_selected)
+            let base = if is_selected {
+                selected_style
+            } else {
+                Style::default()
+            };
+            let value_style = if is_selected {
+                base
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+
+            let (key, value_display, modified) = match entry {
+                SettingEntry::Known(def) => {
+                    let value = app.config.get(def.key);
+                    let display = format_value(def.setting_type, &value);
+                    let modified = app.config.get_raw(def.key).is_some();
+                    (def.key.to_string(), display, modified)
+                }
+                SettingEntry::Unknown(key) => {
+                    let value = app.config.get(key);
+                    let display = format_json_compact(&value);
+                    (key.clone(), display, true)
+                }
+            };
+
+            let key_style = if modified {
+                base.add_modifier(Modifier::BOLD)
+            } else {
+                base
+            };
+
+            Row::new(vec![
+                Line::from(Span::styled(format!(" {key}"), key_style)),
+                Line::from(Span::styled(value_display, value_style)),
+            ])
+            .style(base)
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
-}
+    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Min(16)])
+        .block(block)
+        .row_highlight_style(selected_style)
+        .column_spacing(2);
 
-/// Renders a single setting entry as a ListItem.
-fn render_setting_item(app: &App, entry: &SettingEntry, selected: bool) -> ListItem<'static> {
-    let style = if selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
-    let line = match entry {
-        SettingEntry::Known(def) => {
-            let value = app.config.get(def.key);
-            let value_display = format_value(def.setting_type, &value);
-            let is_modified = app.config.get_raw(def.key).is_some();
-
-            let mut spans = vec![Span::styled(
-                format!("  {}  ", def.key),
-                if is_modified {
-                    style.add_modifier(Modifier::BOLD)
-                } else {
-                    style
-                },
-            )];
-
-            spans.push(Span::styled(value_display, style.fg(Color::Yellow)));
-
-            Line::from(spans)
-        }
-        SettingEntry::Unknown(key) => {
-            let value = app.config.get(key);
-            let display = format_json_compact(&value);
-            Line::from(vec![
-                Span::styled(format!("  {}  ", key), style),
-                Span::styled(display, style.fg(Color::Yellow)),
-            ])
-        }
-    };
-
-    ListItem::new(line).style(style)
+    frame.render_widget(table, area);
 }
 
 /// Formats a value for display based on its type.
