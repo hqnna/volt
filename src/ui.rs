@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Ta
 use ratatui::Frame;
 use serde_json::Value;
 
-use crate::app::{App, Focus, SettingEntry};
+use crate::app::{App, CustomKeyType, Focus, InputMode, SettingEntry};
 use crate::settings::{Section, SettingType};
 
 /// Sidebar width in columns.
@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_settings_panel(frame, app, columns[1]);
     render_bottom_bar(frame, app, rows[1]);
 
-    if app.editing {
+    if app.is_editing() {
         render_edit_overlay(frame, app);
     }
 }
@@ -430,8 +430,17 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-/// Renders an inline edit overlay for string/number editing.
+/// Renders the appropriate edit overlay based on input mode.
 fn render_edit_overlay(frame: &mut Frame, app: &App) {
+    match app.input_mode {
+        InputMode::SelectingType => render_type_select_overlay(frame, app),
+        InputMode::Normal => {}
+        _ => render_text_input_overlay(frame, app),
+    }
+}
+
+/// Renders a text input overlay for inline editing, key name entry, or custom value entry.
+fn render_text_input_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 50.min(area.width.saturating_sub(4));
     let height = 3;
@@ -441,8 +450,14 @@ fn render_edit_overlay(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Clear, popup_area);
 
+    let title = match app.input_mode {
+        InputMode::EnteringKeyName => " Enter Key Name (Enter to confirm, Esc to cancel) ",
+        InputMode::EnteringCustomValue => " Enter Value (Enter to save, Esc to cancel) ",
+        _ => " Edit Value (Enter to save, Esc to cancel) ",
+    };
+
     let block = Block::default()
-        .title(" Edit Value (Enter to save, Esc to cancel) ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
 
@@ -451,6 +466,45 @@ fn render_edit_overlay(frame: &mut Frame, app: &App) {
         .block(block);
 
     frame.render_widget(input, popup_area);
+}
+
+/// Renders the type selection overlay for choosing a custom key value type.
+fn render_type_select_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let item_count = CustomKeyType::ALL.len() as u16;
+    let width = 40.min(area.width.saturating_sub(4));
+    let height = (item_count + 2).min(area.height.saturating_sub(2)); // +2 for border
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Select Type (Enter to confirm, Esc to cancel) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let items: Vec<ListItem> = CustomKeyType::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let style = if i == app.selected_type {
+                selected_style
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", t.label())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup_area);
 }
 
 #[cfg(test)]

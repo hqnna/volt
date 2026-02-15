@@ -11,6 +11,51 @@ pub enum Focus {
     Settings,
 }
 
+/// Tracks what kind of input the user is currently providing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    /// Not editing anything.
+    Normal,
+    /// Inline editing a known setting's value (string/number/array item).
+    EditingValue,
+    /// Entering a key name for a new custom key in Advanced.
+    EnteringKeyName,
+    /// Selecting a value type for a new custom key.
+    SelectingType,
+    /// Entering a value for a new custom key (string/number).
+    EnteringCustomValue,
+}
+
+/// Value type choices for custom keys in the Advanced section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomKeyType {
+    Boolean,
+    String,
+    Number,
+    Array,
+    Object,
+}
+
+impl CustomKeyType {
+    pub const ALL: &[CustomKeyType] = &[
+        CustomKeyType::Boolean,
+        CustomKeyType::String,
+        CustomKeyType::Number,
+        CustomKeyType::Array,
+        CustomKeyType::Object,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CustomKeyType::Boolean => "boolean",
+            CustomKeyType::String => "string",
+            CustomKeyType::Number => "number",
+            CustomKeyType::Array => "array",
+            CustomKeyType::Object => "object",
+        }
+    }
+}
+
 /// A request to open an external editor, returned from app methods.
 #[derive(Debug, Clone)]
 pub struct EditorRequest {
@@ -30,10 +75,14 @@ pub struct App {
     pub focus: Focus,
     pub should_quit: bool,
     pub status_message: Option<String>,
-    /// Whether the user is currently inline-editing a string/number field.
-    pub editing: bool,
+    /// Current input mode.
+    pub input_mode: InputMode,
     /// Buffer for inline text editing.
     pub edit_buffer: String,
+    /// Pending custom key name (used during Advanced add flow).
+    pub pending_custom_key: Option<String>,
+    /// Selected type index during type selection.
+    pub selected_type: usize,
 }
 
 impl App {
@@ -46,9 +95,16 @@ impl App {
             focus: Focus::Sidebar,
             should_quit: false,
             status_message: None,
-            editing: false,
+            input_mode: InputMode::Normal,
             edit_buffer: String::new(),
+            pending_custom_key: None,
+            selected_type: 0,
         }
+    }
+
+    /// Returns whether the app is in any editing/input mode.
+    pub fn is_editing(&self) -> bool {
+        self.input_mode != InputMode::Normal
     }
 
     /// Returns the currently selected section.
@@ -159,7 +215,7 @@ impl App {
                     None
                 }
                 SettingType::String | SettingType::Number => {
-                    self.editing = true;
+                    self.input_mode = InputMode::EditingValue;
                     let current = self.config.get(def.key);
                     self.edit_buffer = match &current {
                         Value::String(s) => s.clone(),
@@ -272,6 +328,11 @@ impl App {
 
     /// Adds an item to a string array setting (prompts for value via edit buffer).
     pub fn add_array_item(&mut self) {
+        if self.current_section() == Section::Advanced {
+            self.start_add_custom_key();
+            return;
+        }
+
         let def = self.selected_array_def();
         let Some(def) = def else {
             return;
@@ -279,7 +340,7 @@ impl App {
 
         match def.setting_type {
             SettingType::ArrayString | SettingType::ArrayObject => {
-                self.editing = true;
+                self.input_mode = InputMode::EditingValue;
                 self.edit_buffer.clear();
             }
             _ => {}
@@ -364,10 +425,10 @@ impl App {
 
     /// Commits the current inline edit.
     pub fn commit_edit(&mut self) {
-        if !self.editing {
+        if self.input_mode != InputMode::EditingValue {
             return;
         }
-        self.editing = false;
+        self.input_mode = InputMode::Normal;
 
         let entries = self.current_settings();
         let entry = if self.current_section().is_single_key() {
@@ -455,10 +516,129 @@ impl App {
         self.edit_buffer.clear();
     }
 
+    /// Starts the "add custom key" flow in the Advanced section.
+    pub fn start_add_custom_key(&mut self) {
+        if self.current_section() != Section::Advanced {
+            return;
+        }
+        self.input_mode = InputMode::EnteringKeyName;
+        self.edit_buffer.clear();
+    }
+
+    /// Commits the key name entry and moves to type selection.
+    pub fn commit_key_name(&mut self) {
+        if self.edit_buffer.trim().is_empty() {
+            self.status_message = Some("Key name cannot be empty.".to_string());
+            return;
+        }
+        let key = self.edit_buffer.trim().to_string();
+        if self.config.get_raw(&key).is_some() {
+            self.status_message = Some(format!("Key '{}' already exists.", key));
+            return;
+        }
+        self.pending_custom_key = Some(key);
+        self.edit_buffer.clear();
+        self.selected_type = 0;
+        self.input_mode = InputMode::SelectingType;
+    }
+
+    /// Commits the type selection and either sets the value or transitions to value entry.
+    /// Returns an `EditorRequest` if the type requires `$EDITOR`.
+    pub fn commit_type_selection(&mut self) -> Option<EditorRequest> {
+        let key = self.pending_custom_key.clone()?;
+        let chosen = CustomKeyType::ALL[self.selected_type];
+
+        match chosen {
+            CustomKeyType::Boolean => {
+                self.config.set(&key, Value::Bool(false));
+                self.status_message = Some(format!("Added '{}' = false", key));
+                self.pending_custom_key = None;
+                self.input_mode = InputMode::Normal;
+                None
+            }
+            CustomKeyType::String | CustomKeyType::Number => {
+                self.input_mode = InputMode::EnteringCustomValue;
+                self.edit_buffer.clear();
+                None
+            }
+            CustomKeyType::Array => {
+                self.config.set(&key, Value::Array(vec![]));
+                self.status_message = Some(format!("Added '{}' = []", key));
+                self.pending_custom_key = None;
+                self.input_mode = InputMode::Normal;
+                None
+            }
+            CustomKeyType::Object => {
+                self.input_mode = InputMode::Normal;
+                let req = EditorRequest {
+                    key: key.clone(),
+                    value: Value::Object(serde_json::Map::new()),
+                    array_index: None,
+                };
+                self.pending_custom_key = None;
+                Some(req)
+            }
+        }
+    }
+
+    /// Commits the custom value entry for a pending custom key.
+    pub fn commit_custom_value(&mut self) {
+        let Some(key) = self.pending_custom_key.take() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        let chosen = CustomKeyType::ALL[self.selected_type];
+        match chosen {
+            CustomKeyType::String => {
+                self.config
+                    .set(&key, Value::String(self.edit_buffer.clone()));
+                self.status_message = Some(format!("Added '{}'", key));
+            }
+            CustomKeyType::Number => {
+                if let Ok(n) = self.edit_buffer.parse::<i64>() {
+                    self.config.set(&key, Value::Number(n.into()));
+                    self.status_message = Some(format!("Added '{}'", key));
+                } else if let Ok(n) = self.edit_buffer.parse::<f64>() {
+                    if let Some(n) = serde_json::Number::from_f64(n) {
+                        self.config.set(&key, Value::Number(n));
+                        self.status_message = Some(format!("Added '{}'", key));
+                    } else {
+                        self.status_message = Some("Invalid number.".to_string());
+                        self.pending_custom_key = Some(key);
+                        return;
+                    }
+                } else {
+                    self.status_message = Some("Invalid number.".to_string());
+                    self.pending_custom_key = Some(key);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.edit_buffer.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Moves type selection up.
+    pub fn type_select_up(&mut self) {
+        if self.selected_type > 0 {
+            self.selected_type -= 1;
+        }
+    }
+
+    /// Moves type selection down.
+    pub fn type_select_down(&mut self) {
+        if self.selected_type < CustomKeyType::ALL.len() - 1 {
+            self.selected_type += 1;
+        }
+    }
+
     /// Cancels the current inline edit.
     pub fn cancel_edit(&mut self) {
-        self.editing = false;
+        self.input_mode = InputMode::Normal;
         self.edit_buffer.clear();
+        self.pending_custom_key = None;
+        self.selected_type = 0;
     }
 
     /// Resets the currently selected setting to its default.
@@ -537,7 +717,7 @@ mod tests {
         assert_eq!(app.selected_setting, 0);
         assert_eq!(app.focus, Focus::Sidebar);
         assert!(!app.should_quit);
-        assert!(!app.editing);
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
@@ -690,10 +870,10 @@ mod tests {
         app.selected_setting = idx;
 
         app.activate_setting();
-        assert!(app.editing);
+        assert!(app.is_editing());
         app.edit_buffer = "my-token".to_string();
         app.commit_edit();
-        assert!(!app.editing);
+        assert!(!app.is_editing());
         assert_eq!(
             app.config.get("amp.bitbucketToken"),
             Value::String("my-token".to_string())
@@ -714,10 +894,10 @@ mod tests {
         app.selected_setting = idx;
 
         app.activate_setting();
-        assert!(app.editing);
+        assert!(app.is_editing());
         app.edit_buffer = "120".to_string();
         app.commit_edit();
-        assert!(!app.editing);
+        assert!(!app.is_editing());
         assert_eq!(
             app.config.get("amp.tools.stopTimeout"),
             Value::Number(120.into())
@@ -727,10 +907,10 @@ mod tests {
     #[test]
     fn test_inline_edit_cancel() {
         let mut app = test_app();
-        app.editing = true;
+        app.input_mode = InputMode::EditingValue;
         app.edit_buffer = "something".to_string();
         app.cancel_edit();
-        assert!(!app.editing);
+        assert!(!app.is_editing());
         assert!(app.edit_buffer.is_empty());
     }
 
@@ -766,10 +946,10 @@ mod tests {
         app.selected_setting = idx;
 
         app.add_array_item();
-        assert!(app.editing);
+        assert!(app.is_editing());
         app.edit_buffer = "*.rs".to_string();
         app.commit_edit();
-        assert!(!app.editing);
+        assert!(!app.is_editing());
         assert_eq!(
             app.config.get("amp.fuzzy.alwaysIncludePaths"),
             Value::Array(vec![Value::String("*.rs".into())])
@@ -969,5 +1149,213 @@ mod tests {
         app.reset_setting();
         assert_eq!(app.current_item_count(), 0);
         assert_eq!(app.selected_setting, 0);
+    }
+
+    #[test]
+    fn test_start_add_custom_key() {
+        let mut app = test_app();
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+        app.start_add_custom_key();
+        assert_eq!(app.input_mode, InputMode::EnteringKeyName);
+        assert!(app.edit_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_start_add_custom_key_not_advanced() {
+        let mut app = test_app();
+        app.selected_section = 0; // General
+        app.start_add_custom_key();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_commit_key_name_empty() {
+        let mut app = test_app();
+        app.selected_section = 4;
+        app.input_mode = InputMode::EnteringKeyName;
+        app.edit_buffer = "  ".to_string();
+        app.commit_key_name();
+        assert_eq!(app.input_mode, InputMode::EnteringKeyName);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_commit_key_name_duplicate() {
+        let mut app = test_app();
+        app.selected_section = 4;
+        app.input_mode = InputMode::EnteringKeyName;
+        app.edit_buffer = "amp.showCosts".to_string();
+        app.commit_key_name();
+        assert_eq!(app.input_mode, InputMode::EnteringKeyName);
+        assert!(app.status_message.unwrap().contains("already exists"));
+    }
+
+    #[test]
+    fn test_commit_key_name_success() {
+        let mut app = test_app();
+        app.selected_section = 4;
+        app.input_mode = InputMode::EnteringKeyName;
+        app.edit_buffer = "my.custom.key".to_string();
+        app.commit_key_name();
+        assert_eq!(app.input_mode, InputMode::SelectingType);
+        assert_eq!(app.pending_custom_key.as_deref(), Some("my.custom.key"));
+        assert!(app.edit_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_commit_type_boolean() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.bool.key".to_string());
+        app.selected_type = 0; // Boolean
+        let req = app.commit_type_selection();
+        assert!(req.is_none());
+        assert_eq!(app.config.get("my.bool.key"), Value::Bool(false));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_custom_key.is_none());
+    }
+
+    #[test]
+    fn test_commit_type_string_enters_value_mode() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.str.key".to_string());
+        app.selected_type = 1; // String
+        let req = app.commit_type_selection();
+        assert!(req.is_none());
+        assert_eq!(app.input_mode, InputMode::EnteringCustomValue);
+        assert!(app.pending_custom_key.is_some());
+    }
+
+    #[test]
+    fn test_commit_type_number_enters_value_mode() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.num.key".to_string());
+        app.selected_type = 2; // Number
+        let req = app.commit_type_selection();
+        assert!(req.is_none());
+        assert_eq!(app.input_mode, InputMode::EnteringCustomValue);
+    }
+
+    #[test]
+    fn test_commit_type_array() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.arr.key".to_string());
+        app.selected_type = 3; // Array
+        let req = app.commit_type_selection();
+        assert!(req.is_none());
+        assert_eq!(app.config.get("my.arr.key"), Value::Array(vec![]));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_commit_type_object_returns_editor_request() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.obj.key".to_string());
+        app.selected_type = 4; // Object
+        let req = app.commit_type_selection();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "my.obj.key");
+        assert!(req.value.is_object());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_commit_custom_value_string() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.str.key".to_string());
+        app.selected_type = 1; // String
+        app.input_mode = InputMode::EnteringCustomValue;
+        app.edit_buffer = "hello world".to_string();
+        app.commit_custom_value();
+        assert_eq!(
+            app.config.get("my.str.key"),
+            Value::String("hello world".into())
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_commit_custom_value_number() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.num.key".to_string());
+        app.selected_type = 2; // Number
+        app.input_mode = InputMode::EnteringCustomValue;
+        app.edit_buffer = "42".to_string();
+        app.commit_custom_value();
+        assert_eq!(app.config.get("my.num.key"), Value::Number(42.into()));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_commit_custom_value_invalid_number() {
+        let mut app = test_app();
+        app.pending_custom_key = Some("my.num.key".to_string());
+        app.selected_type = 2; // Number
+        app.input_mode = InputMode::EnteringCustomValue;
+        app.edit_buffer = "not a number".to_string();
+        app.commit_custom_value();
+        assert!(app.status_message.unwrap().contains("Invalid"));
+        assert!(app.pending_custom_key.is_some());
+        assert_eq!(app.input_mode, InputMode::EnteringCustomValue);
+    }
+
+    #[test]
+    fn test_type_select_navigation() {
+        let mut app = test_app();
+        app.selected_type = 0;
+        app.type_select_up();
+        assert_eq!(app.selected_type, 0); // stays at 0
+        app.type_select_down();
+        assert_eq!(app.selected_type, 1);
+        app.type_select_down();
+        assert_eq!(app.selected_type, 2);
+        // Go to last
+        for _ in 0..10 {
+            app.type_select_down();
+        }
+        assert_eq!(app.selected_type, CustomKeyType::ALL.len() - 1);
+    }
+
+    #[test]
+    fn test_cancel_edit_clears_custom_key_state() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SelectingType;
+        app.pending_custom_key = Some("my.key".to_string());
+        app.selected_type = 2;
+        app.cancel_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_custom_key.is_none());
+        assert_eq!(app.selected_type, 0);
+    }
+
+    #[test]
+    fn test_add_custom_key_full_flow_string() {
+        let mut app = test_app();
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+
+        // Step 1: start
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringKeyName);
+
+        // Step 2: enter key name
+        app.edit_buffer = "my.custom.setting".to_string();
+        app.commit_key_name();
+        assert_eq!(app.input_mode, InputMode::SelectingType);
+
+        // Step 3: select string type
+        app.selected_type = 1; // String
+        app.commit_type_selection();
+        assert_eq!(app.input_mode, InputMode::EnteringCustomValue);
+
+        // Step 4: enter value
+        app.edit_buffer = "my value".to_string();
+        app.commit_custom_value();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.config.get("my.custom.setting"),
+            Value::String("my value".into())
+        );
     }
 }

@@ -19,7 +19,7 @@ use crossterm::ExecutableCommand;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 
-use app::{App, EditorRequest, Focus};
+use app::{App, EditorRequest, Focus, InputMode};
 use config::Config;
 
 /// Volt — TUI Settings Editor for Amp
@@ -69,8 +69,11 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App
             // Clear status message on any key press
             app.status_message = None;
 
-            if app.editing {
-                handle_edit_input(app, key.code);
+            if app.is_editing() {
+                let editor_req = handle_modal_input(app, key.code);
+                if let Some(req) = editor_req {
+                    run_editor(terminal, app, &req)?;
+                }
             } else {
                 let editor_req = handle_normal_input(app, key.code, key.modifiers);
                 if let Some(req) = editor_req {
@@ -110,17 +113,55 @@ fn run_editor(
     Ok(())
 }
 
-fn handle_edit_input(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Enter => app.commit_edit(),
-        KeyCode::Esc => app.cancel_edit(),
-        KeyCode::Backspace => {
-            app.edit_buffer.pop();
+fn handle_modal_input(app: &mut App, key: KeyCode) -> Option<EditorRequest> {
+    match app.input_mode {
+        InputMode::EditingValue => {
+            match key {
+                KeyCode::Enter => app.commit_edit(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
         }
-        KeyCode::Char(c) => {
-            app.edit_buffer.push(c);
+        InputMode::EnteringKeyName => {
+            match key {
+                KeyCode::Enter => app.commit_key_name(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
         }
-        _ => {}
+        InputMode::SelectingType => {
+            match key {
+                KeyCode::Enter => return app.commit_type_selection(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Up | KeyCode::Char('k') => app.type_select_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.type_select_down(),
+                _ => {}
+            }
+            None
+        }
+        InputMode::EnteringCustomValue => {
+            match key {
+                KeyCode::Enter => app.commit_custom_value(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
+        InputMode::Normal => None,
     }
 }
 
