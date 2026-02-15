@@ -1,0 +1,18 @@
+[package]
+name = "volt"
+version = "0.1.0"
+edition = "2021"
+description = "TUI Settings Editor for Amp"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+dirs = "6"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
