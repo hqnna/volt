@@ -407,14 +407,25 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
     let text = if app.focus == Focus::Settings {
         let section = app.current_section();
         if section == Section::Advanced {
-            " Enter: edit | a: add key | d: delete | r: remove | e: $EDITOR | Tab: sidebar"
-                .to_string()
+            " Enter: edit | a: add key | r: remove | e: $EDITOR | Tab: sidebar".to_string()
         } else if section.is_single_key() {
             " Enter: edit item | a: add | d: delete | e: $EDITOR | r: reset | Tab: sidebar"
                 .to_string()
         } else {
-            " Enter: toggle/edit | a: add | d: delete | r: reset | e: $EDITOR | Tab: sidebar"
-                .to_string()
+            let entries = app.current_settings();
+            let is_array = entries.get(app.selected_setting).is_some_and(|e| {
+                matches!(
+                    e,
+                    SettingEntry::Known(d)
+                        if matches!(d.setting_type, SettingType::ArrayString | SettingType::ArrayObject)
+                )
+            });
+            if is_array {
+                " Enter: toggle/edit | a: add | d: delete | r: reset | e: $EDITOR | Tab: sidebar"
+                    .to_string()
+            } else {
+                " Enter: toggle/edit | r: reset | e: $EDITOR | Tab: sidebar".to_string()
+            }
         }
     } else {
         format!(
