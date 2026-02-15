@@ -275,7 +275,8 @@ fn render_single_key_panel(frame: &mut Frame, app: &App, area: Rect, block: Bloc
     frame.render_widget(table, area);
 }
 
-/// Collects unique object field names from an array of values, preserving insertion order.
+/// Collects unique object field names from an array of values.
+/// Columns are sorted so identifying fields (tool, name, pattern) appear first.
 fn collect_object_columns(items: &[Value]) -> Vec<String> {
     let mut columns: Vec<String> = Vec::new();
     for item in items {
@@ -286,11 +287,20 @@ fn collect_object_columns(items: &[Value]) -> Vec<String> {
                 }
             }
         } else {
-            // Not all items are objects — can't build columns.
             return Vec::new();
         }
     }
+    columns.sort_by_key(|k| column_priority(k));
     columns
+}
+
+/// Returns a sort priority for a column name. Lower values appear first.
+fn column_priority(name: &str) -> u8 {
+    match name {
+        "tool" | "name" | "pattern" | "key" => 0,
+        "action" | "decision" | "type" => 1,
+        _ => 2,
+    }
 }
 
 /// Formats a value for display based on its type.
@@ -527,9 +537,7 @@ mod tests {
         obj2.insert("action".into(), Value::String("ask".into()));
         let items = vec![Value::Object(obj1), Value::Object(obj2)];
         let cols = collect_object_columns(&items);
-        assert!(cols.contains(&"tool".to_string()));
-        assert!(cols.contains(&"action".to_string()));
-        assert_eq!(cols.len(), 2);
+        assert_eq!(cols, vec!["tool", "action"]);
     }
 
     #[test]
