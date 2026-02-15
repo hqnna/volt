@@ -15,19 +15,20 @@ const SIDEBAR_WIDTH: u16 = 18;
 
 /// Renders the full application UI.
 pub fn render(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
+    let status_rows = if app.status_message.is_some() { 2 } else { 1 };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(status_rows)])
         .split(frame.area());
 
-    render_sidebar(frame, app, chunks[0]);
-    render_settings_panel(frame, app, chunks[1]);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
+        .split(rows[0]);
 
-    render_help_bar(frame, app);
-
-    if let Some(ref msg) = app.status_message {
-        render_status_bar(frame, msg);
-    }
+    render_sidebar(frame, app, columns[0]);
+    render_settings_panel(frame, app, columns[1]);
+    render_bottom_bar(frame, app, rows[1]);
 
     if app.editing {
         render_edit_overlay(frame, app);
@@ -227,23 +228,33 @@ fn format_json_compact(value: &Value) -> String {
     }
 }
 
-/// Renders a help bar showing the description of the currently selected setting.
-fn render_help_bar(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let bar_area = Rect::new(0, area.height.saturating_sub(2), area.width, 1);
+/// Renders the bottom bar area (help line + optional status message).
+fn render_bottom_bar(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(ref msg) = app.status_message {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
 
+        render_help_line(frame, app, rows[0]);
+
+        let bar =
+            Paragraph::new(msg.as_str()).style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        frame.render_widget(bar, rows[1]);
+    } else {
+        render_help_line(frame, app, area);
+    }
+}
+
+/// Renders the help/description line.
+fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
     let text = if app.focus == Focus::Settings {
         let entries = app.current_settings();
         entries
             .get(app.selected_setting)
             .map(|entry| match entry {
                 SettingEntry::Known(def) => {
-                    format!(
-                        " {} — {} ({})",
-                        def.key,
-                        def.description,
-                        app.config.path().display()
-                    )
+                    format!(" {} — {}", def.key, def.description)
                 }
                 SettingEntry::Unknown(key) => format!(" {} (custom key)", key),
             })
@@ -256,15 +267,7 @@ fn render_help_bar(frame: &mut Frame, app: &App) {
     };
 
     let bar = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(bar, bar_area);
-}
-
-/// Renders a status bar at the bottom of the screen.
-fn render_status_bar(frame: &mut Frame, message: &str) {
-    let area = frame.area();
-    let bar_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-    let bar = Paragraph::new(message).style(Style::default().fg(Color::Black).bg(Color::Yellow));
-    frame.render_widget(bar, bar_area);
+    frame.render_widget(bar, area);
 }
 
 /// Renders an inline edit overlay for string/number editing.
