@@ -172,11 +172,6 @@ impl Config {
 
         Ok(())
     }
-
-    /// Returns the path this config was loaded from.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 #[cfg(test)]

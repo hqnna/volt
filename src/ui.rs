@@ -428,10 +428,7 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     } else {
-        format!(
-            " ↑↓: navigate | Enter/Tab: settings | Ctrl+S: save | q: quit | {}",
-            app.config.path().display()
-        )
+        " ↑↓: navigate | Enter/Tab: settings | Ctrl+S: save | q: quit".to_string()
     };
 
     let bar = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
