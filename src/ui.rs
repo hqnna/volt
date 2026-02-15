@@ -197,23 +197,100 @@ fn render_single_key_panel(frame: &mut Frame, app: &App, area: Rect, block: Bloc
         .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let list_items: Vec<ListItem> = items
+    // Collect all unique keys across objects to build columns.
+    let columns = collect_object_columns(&items);
+
+    if columns.is_empty() {
+        // Non-object items: fall back to a simple list.
+        let list_items: Vec<ListItem> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let is_selected = app.focus == Focus::Settings && i == app.selected_setting;
+                let style = if is_selected {
+                    selected_style
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(format!(" {}", format_json_compact(item))).style(style)
+            })
+            .collect();
+        let list = List::new(list_items).block(block);
+        frame.render_widget(list, area);
+        return;
+    }
+
+    // Build header row.
+    let header = Row::new(
+        columns
+            .iter()
+            .map(|col| {
+                Line::from(Span::styled(
+                    col.as_str(),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Build data rows.
+    let rows: Vec<Row> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
             let is_selected = app.focus == Focus::Settings && i == app.selected_setting;
-            let style = if is_selected {
+            let base = if is_selected {
                 selected_style
             } else {
-                Style::default().fg(Color::White)
+                Style::default()
             };
-            let text = format_array_item(item);
-            ListItem::new(format!(" {text}")).style(style)
+            let value_style = if is_selected {
+                base
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            let cells: Vec<Line> = columns
+                .iter()
+                .map(|col| {
+                    let text = item
+                        .get(col)
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .unwrap_or_default();
+                    Line::from(Span::styled(text, value_style))
+                })
+                .collect();
+            Row::new(cells).style(base)
         })
         .collect();
 
-    let list = List::new(list_items).block(block);
-    frame.render_widget(list, area);
+    let widths: Vec<Constraint> = columns.iter().map(|_| Constraint::Fill(1)).collect();
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .column_spacing(2);
+
+    frame.render_widget(table, area);
+}
+
+/// Collects unique object field names from an array of values, preserving insertion order.
+fn collect_object_columns(items: &[Value]) -> Vec<String> {
+    let mut columns: Vec<String> = Vec::new();
+    for item in items {
+        if let Some(obj) = item.as_object() {
+            for key in obj.keys() {
+                if !columns.contains(key) {
+                    columns.push(key.clone());
+                }
+            }
+        } else {
+            // Not all items are objects — can't build columns.
+            return Vec::new();
+        }
+    }
+    columns
 }
 
 /// Formats a value for display based on its type.
@@ -274,27 +351,6 @@ fn format_value(setting_type: SettingType, value: &Value) -> String {
     }
 }
 
-/// Formats a single array item for display in single-key sections.
-fn format_array_item(value: &Value) -> String {
-    match value {
-        Value::Object(obj) => {
-            let pairs: Vec<String> = obj
-                .iter()
-                .map(|(k, v)| {
-                    let v_str = match v {
-                        Value::String(s) => format!("\"{s}\""),
-                        other => other.to_string(),
-                    };
-                    format!("{k}: {v_str}")
-                })
-                .collect();
-            format!("{{{}}}", pairs.join(", "))
-        }
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
 /// Formats a JSON value compactly for display.
 fn format_json_compact(value: &Value) -> String {
     match value {
@@ -308,7 +364,10 @@ fn format_json_compact(value: &Value) -> String {
         }
         Value::Number(n) => n.to_string(),
         Value::Array(a) if a.is_empty() => "[]".to_string(),
-        Value::Array(a) => format!("[{} items]", a.len()),
+        Value::Array(a) => {
+            let items: Vec<String> = a.iter().map(format_json_compact).collect();
+            format!("[{}]", items.join(", "))
+        }
         Value::Object(o) if o.is_empty() => "{}".to_string(),
         Value::Object(o) => format!("{{{} keys}}", o.len()),
         Value::Null => "null".to_string(),
@@ -459,25 +518,32 @@ mod tests {
     }
 
     #[test]
-    fn test_format_array_item_object() {
+    fn test_collect_object_columns() {
+        let mut obj1 = serde_json::Map::new();
+        obj1.insert("tool".into(), Value::String("Bash".into()));
+        obj1.insert("action".into(), Value::String("allow".into()));
+        let mut obj2 = serde_json::Map::new();
+        obj2.insert("tool".into(), Value::String("Read".into()));
+        obj2.insert("action".into(), Value::String("ask".into()));
+        let items = vec![Value::Object(obj1), Value::Object(obj2)];
+        let cols = collect_object_columns(&items);
+        assert!(cols.contains(&"tool".to_string()));
+        assert!(cols.contains(&"action".to_string()));
+        assert_eq!(cols.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_object_columns_non_objects() {
+        let items = vec![Value::String("a".into()), Value::String("b".into())];
+        assert!(collect_object_columns(&items).is_empty());
+    }
+
+    #[test]
+    fn test_collect_object_columns_mixed() {
         let mut obj = serde_json::Map::new();
-        obj.insert("tool".into(), Value::String("Bash".into()));
-        obj.insert("decision".into(), Value::String("allow".into()));
-        let result = format_array_item(&Value::Object(obj));
-        assert!(result.starts_with('{'));
-        assert!(result.contains("tool: \"Bash\""));
-        assert!(result.contains("decision: \"allow\""));
-    }
-
-    #[test]
-    fn test_format_array_item_string() {
-        assert_eq!(format_array_item(&Value::String("hello".into())), "hello");
-    }
-
-    #[test]
-    fn test_format_array_item_other() {
-        assert_eq!(format_array_item(&Value::Bool(true)), "true");
-        assert_eq!(format_array_item(&Value::Number(42.into())), "42");
+        obj.insert("key".into(), Value::String("val".into()));
+        let items = vec![Value::Object(obj), Value::String("not an object".into())];
+        assert!(collect_object_columns(&items).is_empty());
     }
 
     #[test]
@@ -487,6 +553,18 @@ mod tests {
         assert_eq!(
             format_json_compact(&Value::String("test".into())),
             "\"test\""
+        );
+    }
+
+    #[test]
+    fn test_format_json_compact_array() {
+        assert_eq!(format_json_compact(&Value::Array(vec![])), "[]");
+        assert_eq!(
+            format_json_compact(&Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into())
+            ])),
+            "[\"a\", \"b\"]"
         );
     }
 }
