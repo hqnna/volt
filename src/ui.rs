@@ -404,10 +404,24 @@ fn render_bottom_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Renders the help/description line.
 fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
-    let text = format!(
-        " q: quit | Tab: switch panel | ↑↓: navigate | Ctrl+S: save | {}",
-        app.config.path().display()
-    );
+    let text = if app.focus == Focus::Settings {
+        let section = app.current_section();
+        if section == Section::Advanced {
+            " Enter: edit | a: add key | d: delete | r: remove | e: $EDITOR | Tab: sidebar"
+                .to_string()
+        } else if section.is_single_key() {
+            " Enter: edit item | a: add | d: delete | e: $EDITOR | r: reset | Tab: sidebar"
+                .to_string()
+        } else {
+            " Enter: toggle/edit | a: add | d: delete | r: reset | e: $EDITOR | Tab: sidebar"
+                .to_string()
+        }
+    } else {
+        format!(
+            " ↑↓: navigate | Enter/Tab: settings | Ctrl+S: save | q: quit | {}",
+            app.config.path().display()
+        )
+    };
 
     let bar = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(bar, area);
