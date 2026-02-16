@@ -32,6 +32,14 @@ pub enum InputMode {
     EnteringDelegateTo,
     /// Confirming whether to open $EDITOR after adding a permission rule.
     ConfirmAdvancedEdit,
+    /// Entering the match field (command/url) for a new MCP permission rule.
+    EnteringMcpMatchField,
+    /// Entering the match value for a new MCP permission rule.
+    EnteringMcpMatchValue,
+    /// Selecting the MCP permission action (allow/reject).
+    SelectingMcpPermissionLevel,
+    /// Confirming whether to open $EDITOR after adding an MCP permission rule.
+    ConfirmMcpEdit,
 }
 
 /// Value type choices for custom keys in the Advanced section.
@@ -91,6 +99,31 @@ impl PermissionLevel {
     }
 }
 
+/// MCP permission level choices (no delegate option).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpPermissionLevel {
+    Allow,
+    Reject,
+}
+
+impl McpPermissionLevel {
+    pub const ALL: &[McpPermissionLevel] = &[McpPermissionLevel::Allow, McpPermissionLevel::Reject];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            McpPermissionLevel::Allow => "allow",
+            McpPermissionLevel::Reject => "reject",
+        }
+    }
+}
+
+/// Which sub-panel has focus in the MCPs split view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpFocus {
+    Configs,
+    Permissions,
+}
+
 /// A request to open an external editor, returned from app methods.
 #[derive(Debug, Clone)]
 pub struct EditorRequest {
@@ -122,6 +155,16 @@ pub struct App {
     pub pending_permission_tool: Option<String>,
     /// Selected permission level index during permission add flow.
     pub selected_permission_level: usize,
+    /// Which sub-panel has focus in the MCPs section.
+    pub mcp_focus: McpFocus,
+    /// Selected item index in the MCP permissions sub-panel.
+    pub selected_mcp_permission: usize,
+    /// Selected MCP permission level index during MCP permission add flow.
+    pub selected_mcp_permission_level: usize,
+    /// Pending match field name for MCP permission add flow (e.g. "command", "url").
+    pub pending_mcp_match_field: Option<String>,
+    /// Pending match value for MCP permission add flow.
+    pub pending_mcp_match_value: Option<String>,
 }
 
 impl App {
@@ -140,6 +183,11 @@ impl App {
             selected_type: 0,
             pending_permission_tool: None,
             selected_permission_level: 0,
+            mcp_focus: McpFocus::Configs,
+            selected_mcp_permission: 0,
+            selected_mcp_permission_level: 0,
+            pending_mcp_match_field: None,
+            pending_mcp_match_value: None,
         }
     }
 
@@ -178,6 +226,11 @@ impl App {
     pub fn current_item_count(&self) -> usize {
         if self.current_section().is_single_key() {
             self.single_key_item_count()
+        } else if self.current_section().is_split_panel() {
+            match self.mcp_focus {
+                McpFocus::Configs => self.mcp_config_entries().len(),
+                McpFocus::Permissions => self.mcp_permission_item_count(),
+            }
         } else {
             self.current_settings().len()
         }
@@ -194,6 +247,23 @@ impl App {
         }
     }
 
+    /// Returns the config entries for the MCPs top panel (amp.mcpServers).
+    pub fn mcp_config_entries(&self) -> Vec<SettingEntry> {
+        settings::known_settings()
+            .into_iter()
+            .filter(|s| s.key == "amp.mcpServers")
+            .map(SettingEntry::Known)
+            .collect()
+    }
+
+    /// Returns the number of MCP permission items.
+    pub fn mcp_permission_item_count(&self) -> usize {
+        self.config
+            .get("amp.mcpPermissions")
+            .as_array()
+            .map_or(0, |a| a.len())
+    }
+
     /// Moves selection up in the current panel.
     pub fn move_up(&mut self) {
         match self.focus {
@@ -201,10 +271,30 @@ impl App {
                 if self.selected_section > 0 {
                     self.selected_section -= 1;
                     self.selected_setting = 0;
+                    self.mcp_focus = McpFocus::Configs;
+                    self.selected_mcp_permission = 0;
                 }
             }
             Focus::Settings => {
-                if self.selected_setting > 0 {
+                if self.current_section().is_split_panel() {
+                    match self.mcp_focus {
+                        McpFocus::Configs => {
+                            if self.selected_setting > 0 {
+                                self.selected_setting -= 1;
+                            }
+                        }
+                        McpFocus::Permissions => {
+                            if self.selected_mcp_permission > 0 {
+                                self.selected_mcp_permission -= 1;
+                            } else {
+                                // Move focus to configs panel
+                                self.mcp_focus = McpFocus::Configs;
+                                let count = self.mcp_config_entries().len();
+                                self.selected_setting = if count > 0 { count - 1 } else { 0 };
+                            }
+                        }
+                    }
+                } else if self.selected_setting > 0 {
                     self.selected_setting -= 1;
                 }
             }
@@ -218,12 +308,35 @@ impl App {
                 if self.selected_section < Section::ALL.len() - 1 {
                     self.selected_section += 1;
                     self.selected_setting = 0;
+                    self.mcp_focus = McpFocus::Configs;
+                    self.selected_mcp_permission = 0;
                 }
             }
             Focus::Settings => {
-                let count = self.current_item_count();
-                if count > 0 && self.selected_setting < count - 1 {
-                    self.selected_setting += 1;
+                if self.current_section().is_split_panel() {
+                    match self.mcp_focus {
+                        McpFocus::Configs => {
+                            let count = self.mcp_config_entries().len();
+                            if count > 0 && self.selected_setting < count - 1 {
+                                self.selected_setting += 1;
+                            } else {
+                                // Move focus to permissions panel
+                                self.mcp_focus = McpFocus::Permissions;
+                                self.selected_mcp_permission = 0;
+                            }
+                        }
+                        McpFocus::Permissions => {
+                            let count = self.mcp_permission_item_count();
+                            if count > 0 && self.selected_mcp_permission < count - 1 {
+                                self.selected_mcp_permission += 1;
+                            }
+                        }
+                    }
+                } else {
+                    let count = self.current_item_count();
+                    if count > 0 && self.selected_setting < count - 1 {
+                        self.selected_setting += 1;
+                    }
                 }
             }
         }
@@ -242,6 +355,10 @@ impl App {
     pub fn activate_setting(&mut self) -> Option<EditorRequest> {
         if self.current_section().is_single_key() {
             return self.activate_single_key_item();
+        }
+
+        if self.current_section().is_split_panel() {
+            return self.activate_mcp_setting();
         }
 
         let entries = self.current_settings();
@@ -324,8 +441,65 @@ impl App {
         })
     }
 
+    /// Activates the selected item in the MCPs split panel.
+    fn activate_mcp_setting(&mut self) -> Option<EditorRequest> {
+        match self.mcp_focus {
+            McpFocus::Configs => {
+                let entries = self.mcp_config_entries();
+                let entry = entries.get(self.selected_setting)?;
+                match entry {
+                    SettingEntry::Known(def) => Some(EditorRequest {
+                        key: def.key.to_string(),
+                        value: self.config.get(def.key),
+                        array_index: None,
+                    }),
+                    _ => None,
+                }
+            }
+            McpFocus::Permissions => {
+                let arr = self.config.get("amp.mcpPermissions");
+                let items = arr.as_array().cloned().unwrap_or_default();
+                let item = items.get(self.selected_mcp_permission)?;
+                Some(EditorRequest {
+                    key: "amp.mcpPermissions".to_string(),
+                    value: item.clone(),
+                    array_index: Some(self.selected_mcp_permission),
+                })
+            }
+        }
+    }
+
     /// Forces opening the current setting in `$EDITOR`.
     pub fn force_editor(&self) -> Option<EditorRequest> {
+        if self.current_section().is_split_panel() {
+            match self.mcp_focus {
+                McpFocus::Configs => {
+                    let entries = self.mcp_config_entries();
+                    let entry = entries.get(self.selected_setting)?;
+                    let (key, value) = match entry {
+                        SettingEntry::Known(def) => (def.key.to_string(), self.config.get(def.key)),
+                        SettingEntry::Unknown(key) => (key.clone(), self.config.get(key)),
+                    };
+                    return Some(EditorRequest {
+                        key,
+                        value,
+                        array_index: None,
+                    });
+                }
+                McpFocus::Permissions => {
+                    let arr = self.config.get("amp.mcpPermissions");
+                    let items = arr.as_array().cloned().unwrap_or_default();
+                    return items
+                        .get(self.selected_mcp_permission)
+                        .map(|item| EditorRequest {
+                            key: "amp.mcpPermissions".to_string(),
+                            value: item.clone(),
+                            array_index: Some(self.selected_mcp_permission),
+                        });
+                }
+            }
+        }
+
         let entries = self.current_settings();
         let entry = if self.current_section().is_single_key() {
             entries.first()?
@@ -374,6 +548,11 @@ impl App {
             return;
         }
 
+        if self.current_section().is_split_panel() && self.mcp_focus == McpFocus::Permissions {
+            self.start_add_mcp_permission();
+            return;
+        }
+
         let def = self.selected_array_def();
         let Some(def) = def else {
             return;
@@ -400,6 +579,11 @@ impl App {
     /// Deletes an item from an array setting.
     /// In single-key sections, deletes the selected item; otherwise deletes the last.
     pub fn delete_array_item(&mut self) {
+        if self.current_section().is_split_panel() && self.mcp_focus == McpFocus::Permissions {
+            self.delete_mcp_permission_item();
+            return;
+        }
+
         let section = self.current_section();
         let def = self.selected_array_def();
         let Some(def) = def else {
@@ -816,10 +1000,31 @@ impl App {
         self.selected_type = 0;
         self.pending_permission_tool = None;
         self.selected_permission_level = 0;
+        self.pending_mcp_match_field = None;
+        self.pending_mcp_match_value = None;
+        self.selected_mcp_permission_level = 0;
     }
 
     /// Resets the currently selected setting to its default.
     pub fn reset_setting(&mut self) {
+        if self.current_section().is_split_panel() {
+            match self.mcp_focus {
+                McpFocus::Configs => {
+                    let entries = self.mcp_config_entries();
+                    if let Some(SettingEntry::Known(def)) = entries.get(self.selected_setting) {
+                        self.config.remove(def.key);
+                        self.status_message = Some(format!("Reset {} to default", def.key));
+                    }
+                }
+                McpFocus::Permissions => {
+                    self.config.remove("amp.mcpPermissions");
+                    self.status_message = Some("Reset amp.mcpPermissions to default".to_string());
+                    self.selected_mcp_permission = 0;
+                }
+            }
+            return;
+        }
+
         let entries = self.current_settings();
         let entry = if self.current_section().is_single_key() {
             entries.first()
@@ -847,6 +1052,133 @@ impl App {
                     self.selected_setting = count - 1;
                 }
             }
+        }
+    }
+
+    /// Starts the MCP permission add flow.
+    fn start_add_mcp_permission(&mut self) {
+        self.input_mode = InputMode::EnteringMcpMatchField;
+        self.edit_buffer.clear();
+    }
+
+    /// Commits the match field name (e.g. "command", "url") for an MCP permission rule.
+    pub fn commit_mcp_match_field(&mut self) {
+        let field = self.edit_buffer.trim().to_string();
+        if field.is_empty() {
+            self.status_message = Some("Match field cannot be empty.".to_string());
+            return;
+        }
+        self.pending_mcp_match_field = Some(field);
+        self.edit_buffer.clear();
+        self.input_mode = InputMode::EnteringMcpMatchValue;
+    }
+
+    /// Commits the match value and moves to MCP permission level selection.
+    pub fn commit_mcp_match_value(&mut self) {
+        if self.edit_buffer.trim().is_empty() {
+            self.status_message = Some("Match value cannot be empty.".to_string());
+            return;
+        }
+        self.pending_mcp_match_value = Some(self.edit_buffer.trim().to_string());
+        self.edit_buffer.clear();
+        self.selected_mcp_permission_level = 0;
+        self.input_mode = InputMode::SelectingMcpPermissionLevel;
+    }
+
+    /// Commits the MCP permission level and adds the rule.
+    pub fn commit_mcp_permission_level(&mut self) {
+        let level = McpPermissionLevel::ALL[self.selected_mcp_permission_level];
+
+        let Some(field) = self.pending_mcp_match_field.take() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        let Some(value) = self.pending_mcp_match_value.take() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+
+        let mut matches_obj = serde_json::Map::new();
+        matches_obj.insert(field.clone(), Value::String(value.clone()));
+
+        let mut obj = serde_json::Map::new();
+        obj.insert("matches".to_string(), Value::Object(matches_obj));
+        obj.insert(
+            "action".to_string(),
+            Value::String(level.label().to_string()),
+        );
+
+        let mut arr = self
+            .config
+            .get("amp.mcpPermissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        arr.push(Value::Object(obj));
+        self.config.set("amp.mcpPermissions", Value::Array(arr));
+
+        self.status_message = Some(format!(
+            "Added MCP permission: {field}={value} = {}",
+            level.label()
+        ));
+        self.input_mode = InputMode::ConfirmMcpEdit;
+    }
+
+    /// Confirms opening $EDITOR for the last-added MCP permission rule.
+    pub fn confirm_mcp_edit(&mut self) -> Option<EditorRequest> {
+        self.input_mode = InputMode::Normal;
+        let arr = self
+            .config
+            .get("amp.mcpPermissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let idx = arr.len().checked_sub(1)?;
+        Some(EditorRequest {
+            key: "amp.mcpPermissions".to_string(),
+            value: arr[idx].clone(),
+            array_index: Some(idx),
+        })
+    }
+
+    /// Declines opening $EDITOR after adding an MCP permission rule.
+    pub fn decline_mcp_edit(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Moves MCP permission level selection up.
+    pub fn mcp_permission_level_up(&mut self) {
+        if self.selected_mcp_permission_level > 0 {
+            self.selected_mcp_permission_level -= 1;
+        }
+    }
+
+    /// Moves MCP permission level selection down.
+    pub fn mcp_permission_level_down(&mut self) {
+        if self.selected_mcp_permission_level < McpPermissionLevel::ALL.len() - 1 {
+            self.selected_mcp_permission_level += 1;
+        }
+    }
+
+    /// Deletes the selected MCP permission item.
+    fn delete_mcp_permission_item(&mut self) {
+        let mut arr = self
+            .config
+            .get("amp.mcpPermissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if arr.is_empty() {
+            self.status_message = Some("Array is already empty.".to_string());
+            return;
+        }
+        let idx = self.selected_mcp_permission.min(arr.len() - 1);
+        arr.remove(idx);
+        self.config
+            .set("amp.mcpPermissions", Value::Array(arr.clone()));
+        self.status_message = Some(format!("Removed MCP permission item {}", idx));
+        if !arr.is_empty() && self.selected_mcp_permission >= arr.len() {
+            self.selected_mcp_permission = arr.len() - 1;
         }
     }
 
@@ -1767,5 +2099,355 @@ mod tests {
         assert_eq!(items[0]["tool"], Value::String("*".into()));
         assert_eq!(items[0]["action"], Value::String("delegate".into()));
         assert_eq!(items[0]["to"], Value::String("my-permission-helper".into()));
+    }
+
+    fn test_app_with_mcp_permissions() -> App {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"{{
+    "amp.mcpServers": {{"test-server": {{"command": "npx"}}}},
+    "amp.mcpPermissions": [
+        {{"matches": {{"command": "npx"}}, "action": "allow"}},
+        {{"matches": {{"url": "https://evil.com"}}, "action": "reject"}}
+    ]
+}}"#
+        )
+        .unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
+        app.selected_section = 3; // MCPs
+        app
+    }
+
+    #[test]
+    fn test_mcp_split_initial_focus() {
+        let app = test_app_with_mcp_permissions();
+        assert_eq!(app.current_section(), Section::Mcps);
+        assert_eq!(app.mcp_focus, McpFocus::Configs);
+        assert_eq!(app.selected_mcp_permission, 0);
+    }
+
+    #[test]
+    fn test_mcp_navigate_configs_to_permissions() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        assert_eq!(app.mcp_focus, McpFocus::Configs);
+
+        // Move down past configs (only 1 entry) should go to permissions
+        app.move_down();
+        assert_eq!(app.mcp_focus, McpFocus::Permissions);
+        assert_eq!(app.selected_mcp_permission, 0);
+    }
+
+    #[test]
+    fn test_mcp_navigate_permissions_to_configs() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 0;
+
+        // Move up from top of permissions should go back to configs
+        app.move_up();
+        assert_eq!(app.mcp_focus, McpFocus::Configs);
+    }
+
+    #[test]
+    fn test_mcp_navigate_within_permissions() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 0;
+
+        app.move_down();
+        assert_eq!(app.selected_mcp_permission, 1);
+        app.move_down();
+        assert_eq!(app.selected_mcp_permission, 1); // stays at last
+
+        app.move_up();
+        assert_eq!(app.selected_mcp_permission, 0);
+    }
+
+    #[test]
+    fn test_mcp_permission_item_count() {
+        let app = test_app_with_mcp_permissions();
+        assert_eq!(app.mcp_permission_item_count(), 2);
+    }
+
+    #[test]
+    fn test_mcp_activate_config_opens_editor() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+        app.selected_setting = 0;
+
+        let req = app.activate_setting();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpServers");
+        assert!(req.array_index.is_none());
+    }
+
+    #[test]
+    fn test_mcp_activate_permission_opens_item() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 1;
+
+        let req = app.activate_setting();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpPermissions");
+        assert_eq!(req.array_index, Some(1));
+        assert_eq!(req.value["action"], Value::String("reject".into()));
+    }
+
+    #[test]
+    fn test_mcp_permission_add_starts_match_field() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchField);
+    }
+
+    #[test]
+    fn test_mcp_match_field_empty_rejected() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpMatchField;
+        app.edit_buffer = "  ".to_string();
+        app.commit_mcp_match_field();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchField);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_mcp_match_field_moves_to_value() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpMatchField;
+        app.edit_buffer = "command".to_string();
+        app.commit_mcp_match_field();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchValue);
+        assert_eq!(app.pending_mcp_match_field.as_deref(), Some("command"));
+    }
+
+    #[test]
+    fn test_mcp_match_value_empty_rejected() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpMatchValue;
+        app.pending_mcp_match_field = Some("command".to_string());
+        app.edit_buffer = "  ".to_string();
+        app.commit_mcp_match_value();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchValue);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_mcp_match_value_moves_to_level_select() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpMatchValue;
+        app.pending_mcp_match_field = Some("url".to_string());
+        app.edit_buffer = "https://example.com".to_string();
+        app.commit_mcp_match_value();
+        assert_eq!(app.input_mode, InputMode::SelectingMcpPermissionLevel);
+        assert_eq!(
+            app.pending_mcp_match_value.as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn test_mcp_permission_level_navigation() {
+        let mut app = test_app_with_mcp_permissions();
+        app.selected_mcp_permission_level = 0;
+        app.mcp_permission_level_up();
+        assert_eq!(app.selected_mcp_permission_level, 0); // stays at 0
+        app.mcp_permission_level_down();
+        assert_eq!(app.selected_mcp_permission_level, 1);
+        app.mcp_permission_level_down();
+        assert_eq!(app.selected_mcp_permission_level, 1); // stays at last (only 2 options)
+    }
+
+    #[test]
+    fn test_mcp_permission_commit_adds_rule() {
+        let mut app = test_app();
+        app.pending_mcp_match_field = Some("command".to_string());
+        app.pending_mcp_match_value = Some("npx".to_string());
+        app.selected_mcp_permission_level = 0; // allow
+        app.commit_mcp_permission_level();
+        assert_eq!(app.input_mode, InputMode::ConfirmMcpEdit);
+
+        let arr = app.config.get("amp.mcpPermissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["matches"],
+            Value::Object({
+                let mut m = serde_json::Map::new();
+                m.insert("command".into(), Value::String("npx".into()));
+                m
+            })
+        );
+        assert_eq!(items[0]["action"], Value::String("allow".into()));
+    }
+
+    #[test]
+    fn test_mcp_permission_full_flow() {
+        let mut app = test_app();
+        app.selected_section = 3; // MCPs
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+
+        // Step 1: start add
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchField);
+
+        // Step 2: enter match field
+        app.edit_buffer = "url".to_string();
+        app.commit_mcp_match_field();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpMatchValue);
+
+        // Step 3: enter match value
+        app.edit_buffer = "https://evil.com/*".to_string();
+        app.commit_mcp_match_value();
+        assert_eq!(app.input_mode, InputMode::SelectingMcpPermissionLevel);
+
+        // Step 4: select reject (index 1)
+        app.mcp_permission_level_down();
+        assert_eq!(app.selected_mcp_permission_level, 1);
+        app.commit_mcp_permission_level();
+        assert_eq!(app.input_mode, InputMode::ConfirmMcpEdit);
+
+        // Step 5: decline editor
+        app.decline_mcp_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let arr = app.config.get("amp.mcpPermissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["action"], Value::String("reject".into()));
+    }
+
+    #[test]
+    fn test_mcp_confirm_edit_returns_editor_request() {
+        let mut app = test_app();
+        app.pending_mcp_match_field = Some("command".to_string());
+        app.pending_mcp_match_value = Some("npx".to_string());
+        app.selected_mcp_permission_level = 0;
+        app.commit_mcp_permission_level();
+        assert_eq!(app.input_mode, InputMode::ConfirmMcpEdit);
+
+        let req = app.confirm_mcp_edit();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpPermissions");
+        assert_eq!(req.array_index, Some(0));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_mcp_delete_permission_item() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 0;
+
+        app.delete_array_item();
+        assert_eq!(app.mcp_permission_item_count(), 1);
+        let arr = app.config.get("amp.mcpPermissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items[0]["action"], Value::String("reject".into()));
+    }
+
+    #[test]
+    fn test_mcp_delete_last_adjusts_selection() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 1; // last item
+
+        app.delete_array_item();
+        assert_eq!(app.mcp_permission_item_count(), 1);
+        assert_eq!(app.selected_mcp_permission, 0);
+    }
+
+    #[test]
+    fn test_mcp_reset_permissions() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+
+        app.reset_setting();
+        assert_eq!(app.mcp_permission_item_count(), 0);
+        assert_eq!(app.selected_mcp_permission, 0);
+    }
+
+    #[test]
+    fn test_mcp_reset_configs() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+        app.selected_setting = 0;
+
+        app.reset_setting();
+        let val = app.config.get("amp.mcpServers");
+        assert!(val.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_mcp_force_editor_configs() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+        app.selected_setting = 0;
+
+        let req = app.force_editor();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpServers");
+        assert!(req.array_index.is_none());
+    }
+
+    #[test]
+    fn test_mcp_force_editor_permissions() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 1;
+
+        let req = app.force_editor();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpPermissions");
+        assert_eq!(req.array_index, Some(1));
+    }
+
+    #[test]
+    fn test_mcp_cancel_edit_clears_state() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SelectingMcpPermissionLevel;
+        app.pending_mcp_match_field = Some("command".to_string());
+        app.pending_mcp_match_value = Some("npx".to_string());
+        app.selected_mcp_permission_level = 1;
+        app.cancel_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_mcp_match_field.is_none());
+        assert!(app.pending_mcp_match_value.is_none());
+        assert_eq!(app.selected_mcp_permission_level, 0);
+    }
+
+    #[test]
+    fn test_mcp_section_change_resets_mcp_state() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Permissions;
+        app.selected_mcp_permission = 1;
+
+        // Switch to sidebar and move to different section
+        app.focus = Focus::Sidebar;
+        app.move_down(); // MCPs -> Advanced
+        assert_eq!(app.mcp_focus, McpFocus::Configs);
+        assert_eq!(app.selected_mcp_permission, 0);
     }
 }

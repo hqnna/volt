@@ -7,7 +7,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Ta
 use ratatui::Frame;
 use serde_json::Value;
 
-use crate::app::{App, CustomKeyType, Focus, InputMode, PermissionLevel, SettingEntry};
+use crate::app::{
+    App, CustomKeyType, Focus, InputMode, McpFocus, McpPermissionLevel, PermissionLevel,
+    SettingEntry,
+};
 use crate::settings::{Section, SettingType};
 
 /// Sidebar width in columns.
@@ -92,6 +95,11 @@ fn render_settings_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     if section.is_single_key() {
         render_single_key_panel(frame, app, area, block);
+        return;
+    }
+
+    if section.is_split_panel() {
+        render_mcp_split_panel(frame, app, area);
         return;
     }
 
@@ -239,6 +247,191 @@ fn render_single_key_panel(frame: &mut Frame, app: &App, area: Rect, block: Bloc
         .enumerate()
         .map(|(i, item)| {
             let is_selected = app.focus == Focus::Settings && i == app.selected_setting;
+            let base = if is_selected {
+                selected_style
+            } else {
+                Style::default()
+            };
+            let value_style = if is_selected {
+                base
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            let cells: Vec<Line> = columns
+                .iter()
+                .map(|col| {
+                    let text = item.get(col).map(format_cell_value).unwrap_or_default();
+                    Line::from(Span::styled(text, value_style))
+                })
+                .collect();
+            Row::new(cells).style(base)
+        })
+        .collect();
+
+    let widths: Vec<Constraint> = columns.iter().map(|_| Constraint::Fill(1)).collect();
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .column_spacing(2);
+
+    frame.render_widget(table, area);
+}
+
+/// Renders the MCPs section as a split panel: top for configs, bottom for permissions.
+fn render_mcp_split_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let halves = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    render_mcp_configs_panel(frame, app, halves[0]);
+    render_mcp_permissions_panel(frame, app, halves[1]);
+}
+
+/// Renders the top half: MCP server configs (amp.mcpServers).
+fn render_mcp_configs_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.focus == Focus::Settings && app.mcp_focus == McpFocus::Configs;
+    let block = Block::default()
+        .title(" MCP Configs ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if is_focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }));
+
+    let entries = app.mcp_config_entries();
+
+    if entries.is_empty() {
+        let p = Paragraph::new("No MCP config settings.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        frame.render_widget(p, area);
+        return;
+    }
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let rows: Vec<Row> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let is_selected = is_focused && i == app.selected_setting;
+            let base = if is_selected {
+                selected_style
+            } else {
+                Style::default()
+            };
+            let value_style = if is_selected {
+                base
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+
+            let (key, value_display, modified) = match entry {
+                SettingEntry::Known(def) => {
+                    let value = app.config.get(def.key);
+                    let display = format_value(def.setting_type, &value);
+                    let modified = app.config.get_raw(def.key).is_some();
+                    (def.key.to_string(), display, modified)
+                }
+                SettingEntry::Unknown(key) => {
+                    let value = app.config.get(key);
+                    let display = format_json_compact(&value);
+                    (key.clone(), display, true)
+                }
+            };
+
+            let key_style = if modified {
+                base.add_modifier(Modifier::BOLD)
+            } else {
+                base
+            };
+
+            Row::new(vec![
+                Line::from(Span::styled(format!(" {key}"), key_style)),
+                Line::from(Span::styled(value_display, value_style)),
+            ])
+            .style(base)
+        })
+        .collect();
+
+    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Min(16)])
+        .block(block)
+        .column_spacing(2);
+
+    frame.render_widget(table, area);
+}
+
+/// Renders the bottom half: MCP permissions (amp.mcpPermissions) as a table.
+fn render_mcp_permissions_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.focus == Focus::Settings && app.mcp_focus == McpFocus::Permissions;
+    let block = Block::default()
+        .title(" MCP Permissions ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if is_focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }));
+
+    let value = app.config.get("amp.mcpPermissions");
+    let items = value.as_array().cloned().unwrap_or_default();
+
+    if items.is_empty() {
+        let p = Paragraph::new(" Empty. Press 'a' to add an item, 'e' to open in $EDITOR.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        frame.render_widget(p, area);
+        return;
+    }
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let columns = collect_object_columns(&items);
+
+    if columns.is_empty() {
+        let list_items: Vec<ListItem> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let is_selected = is_focused && i == app.selected_mcp_permission;
+                let style = if is_selected {
+                    selected_style
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(format!(" {}", format_json_compact(item))).style(style)
+            })
+            .collect();
+        let list = List::new(list_items).block(block);
+        frame.render_widget(list, area);
+        return;
+    }
+
+    let header = Row::new(
+        columns
+            .iter()
+            .map(|col| {
+                Line::from(Span::styled(
+                    col.as_str(),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let rows: Vec<Row> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = is_focused && i == app.selected_mcp_permission;
             let base = if is_selected {
                 selected_style
             } else {
@@ -436,6 +629,17 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
         let section = app.current_section();
         if section == Section::Advanced {
             " Enter: edit | a: add key | r: remove | e: $EDITOR | Tab: sidebar".to_string()
+        } else if section.is_split_panel() {
+            match app.mcp_focus {
+                McpFocus::Configs => {
+                    " Enter: edit | e: $EDITOR | r: reset | ↓: permissions | Tab: sidebar"
+                        .to_string()
+                }
+                McpFocus::Permissions => {
+                    " Enter: edit | a: add | d: delete | e: $EDITOR | r: reset | Tab: sidebar"
+                        .to_string()
+                }
+            }
         } else if section.is_single_key() {
             " Enter: edit item | a: add | d: delete | e: $EDITOR | r: reset | Tab: sidebar"
                 .to_string()
@@ -468,7 +672,12 @@ fn render_edit_overlay(frame: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::SelectingType => render_type_select_overlay(frame, app),
         InputMode::SelectingPermissionLevel => render_permission_level_overlay(frame, app),
-        InputMode::ConfirmAdvancedEdit => render_confirm_editor_overlay(frame),
+        InputMode::SelectingMcpPermissionLevel => {
+            render_mcp_permission_level_overlay(frame, app);
+        }
+        InputMode::ConfirmAdvancedEdit | InputMode::ConfirmMcpEdit => {
+            render_confirm_editor_overlay(frame);
+        }
         InputMode::Normal => {}
         _ => render_text_input_overlay(frame, app),
     }
@@ -490,6 +699,10 @@ fn render_text_input_overlay(frame: &mut Frame, app: &App) {
         InputMode::EnteringCustomValue => " Enter Value (Enter to save, Esc to cancel) ",
         InputMode::EnteringPermissionTool => " Enter Tool Name (Enter to confirm, Esc to cancel) ",
         InputMode::EnteringDelegateTo => " Enter Program Name (Enter to confirm, Esc to cancel) ",
+        InputMode::EnteringMcpMatchField => {
+            " Enter Match Field e.g. command, url (Enter to confirm, Esc to cancel) "
+        }
+        InputMode::EnteringMcpMatchValue => " Enter Match Value (Enter to confirm, Esc to cancel) ",
         _ => " Edit Value (Enter to save, Esc to cancel) ",
     };
 
@@ -594,6 +807,45 @@ fn render_permission_level_overlay(frame: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, level)| {
             let style = if i == app.selected_permission_level {
+                selected_style
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", level.label())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup_area);
+}
+
+/// Renders the MCP permission level selection overlay (allow/reject only).
+fn render_mcp_permission_level_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let item_count = McpPermissionLevel::ALL.len() as u16;
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = (item_count + 2).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Select Action (Enter to confirm, Esc to cancel) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let items: Vec<ListItem> = McpPermissionLevel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let style = if i == app.selected_mcp_permission_level {
                 selected_style
             } else {
                 Style::default().fg(Color::White)

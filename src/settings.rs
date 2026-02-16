@@ -59,6 +59,11 @@ impl Section {
     pub fn is_single_key(self) -> bool {
         matches!(self, Section::Permissions)
     }
+
+    /// Returns whether this section uses a split panel (top/bottom) layout.
+    pub fn is_split_panel(self) -> bool {
+        matches!(self, Section::Mcps)
+    }
 }
 
 /// Theme options for `amp.terminal.theme`.
@@ -347,5 +352,14 @@ mod tests {
         assert!(!Section::Tools.is_single_key());
         assert!(!Section::Mcps.is_single_key());
         assert!(!Section::Advanced.is_single_key());
+    }
+
+    #[test]
+    fn test_is_split_panel() {
+        assert!(Section::Mcps.is_split_panel());
+        assert!(!Section::General.is_split_panel());
+        assert!(!Section::Permissions.is_split_panel());
+        assert!(!Section::Tools.is_split_panel());
+        assert!(!Section::Advanced.is_split_panel());
     }
 }

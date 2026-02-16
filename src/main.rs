@@ -203,6 +203,48 @@ fn handle_modal_input(app: &mut App, key: KeyCode) -> Option<EditorRequest> {
             }
             _ => None,
         },
+        InputMode::EnteringMcpMatchField => {
+            match key {
+                KeyCode::Enter => app.commit_mcp_match_field(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
+        InputMode::EnteringMcpMatchValue => {
+            match key {
+                KeyCode::Enter => app.commit_mcp_match_value(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
+        InputMode::SelectingMcpPermissionLevel => {
+            match key {
+                KeyCode::Enter => app.commit_mcp_permission_level(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Up | KeyCode::Char('k') => app.mcp_permission_level_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.mcp_permission_level_down(),
+                _ => {}
+            }
+            None
+        }
+        InputMode::ConfirmMcpEdit => match key {
+            KeyCode::Char('y') | KeyCode::Enter => app.confirm_mcp_edit(),
+            KeyCode::Char('n') | KeyCode::Esc => {
+                app.decline_mcp_edit();
+                None
+            }
+            _ => None,
+        },
         InputMode::Normal => None,
     }
 }
