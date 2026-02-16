@@ -252,13 +252,7 @@ fn render_single_key_panel(frame: &mut Frame, app: &App, area: Rect, block: Bloc
             let cells: Vec<Line> = columns
                 .iter()
                 .map(|col| {
-                    let text = item
-                        .get(col)
-                        .map(|v| match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
+                    let text = item.get(col).map(format_cell_value).unwrap_or_default();
                     Line::from(Span::styled(text, value_style))
                 })
                 .collect();
@@ -298,8 +292,42 @@ fn collect_object_columns(items: &[Value]) -> Vec<String> {
 fn column_priority(name: &str) -> u8 {
     match name {
         "tool" | "name" | "pattern" | "key" => 0,
-        "action" | "decision" | "type" => 1,
+        "action" | "decision" | "type" | "to" => 1,
         _ => 2,
+    }
+}
+
+/// Formats a cell value for display in object tables.
+/// Produces compact, human-readable output for nested objects and arrays.
+fn format_cell_value(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        Value::String(s) => s.clone(),
+                        Value::Array(arr) => {
+                            let items: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                            items.join(", ")
+                        }
+                        other => other.to_string(),
+                    };
+                    format!("{k}: {val}")
+                })
+                .collect();
+            parts.join("; ")
+        }
+        Value::Array(arr) => {
+            let items: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            if items.is_empty() {
+                value.to_string()
+            } else {
+                items.join(", ")
+            }
+        }
+        other => other.to_string(),
     }
 }
 
@@ -440,6 +468,7 @@ fn render_edit_overlay(frame: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::SelectingType => render_type_select_overlay(frame, app),
         InputMode::SelectingPermissionLevel => render_permission_level_overlay(frame, app),
+        InputMode::ConfirmAdvancedEdit => render_confirm_editor_overlay(frame),
         InputMode::Normal => {}
         _ => render_text_input_overlay(frame, app),
     }
@@ -460,6 +489,7 @@ fn render_text_input_overlay(frame: &mut Frame, app: &App) {
         InputMode::EnteringKeyName => " Enter Key Name (Enter to confirm, Esc to cancel) ",
         InputMode::EnteringCustomValue => " Enter Value (Enter to save, Esc to cancel) ",
         InputMode::EnteringPermissionTool => " Enter Tool Name (Enter to confirm, Esc to cancel) ",
+        InputMode::EnteringDelegateTo => " Enter Program Name (Enter to confirm, Esc to cancel) ",
         _ => " Edit Value (Enter to save, Esc to cancel) ",
     };
 
@@ -512,6 +542,29 @@ fn render_type_select_overlay(frame: &mut Frame, app: &App) {
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup_area);
+}
+
+/// Renders the "Open Editor?" confirmation overlay.
+fn render_confirm_editor_overlay(frame: &mut Frame) {
+    let area = frame.area();
+    let width = 40.min(area.width.saturating_sub(4));
+    let height = 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Open Editor? (y/n) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let text = Paragraph::new(" y: open in $EDITOR  n: skip")
+        .style(Style::default().fg(Color::White))
+        .block(block);
+
+    frame.render_widget(text, popup_area);
 }
 
 /// Renders the permission level selection overlay.
@@ -674,5 +727,44 @@ mod tests {
             ])),
             "[\"a\", \"b\"]"
         );
+    }
+
+    #[test]
+    fn test_format_cell_value_string() {
+        assert_eq!(format_cell_value(&Value::String("hello".into())), "hello");
+    }
+
+    #[test]
+    fn test_format_cell_value_object_with_string() {
+        let mut map = serde_json::Map::new();
+        map.insert("cmd".into(), Value::String("*git commit*".into()));
+        assert_eq!(format_cell_value(&Value::Object(map)), "cmd: *git commit*");
+    }
+
+    #[test]
+    fn test_format_cell_value_object_with_array() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "cmd".into(),
+            Value::Array(vec![
+                Value::String("*python *".into()),
+                Value::String("*python3 *".into()),
+            ]),
+        );
+        assert_eq!(
+            format_cell_value(&Value::Object(map)),
+            "cmd: *python *, *python3 *"
+        );
+    }
+
+    #[test]
+    fn test_format_cell_value_object_multiple_keys() {
+        let mut map = serde_json::Map::new();
+        map.insert("cmd".into(), Value::String("*git*".into()));
+        map.insert("args".into(), Value::String("push".into()));
+        let result = format_cell_value(&Value::Object(map));
+        assert!(result.contains("cmd: *git*"));
+        assert!(result.contains("args: push"));
+        assert!(result.contains("; "));
     }
 }

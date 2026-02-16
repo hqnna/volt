@@ -28,6 +28,10 @@ pub enum InputMode {
     EnteringPermissionTool,
     /// Selecting the permission level (ask/allow/reject) for a new permission rule.
     SelectingPermissionLevel,
+    /// Entering the delegate target program name for a permission rule.
+    EnteringDelegateTo,
+    /// Confirming whether to open $EDITOR after adding a permission rule.
+    ConfirmAdvancedEdit,
 }
 
 /// Value type choices for custom keys in the Advanced section.
@@ -66,6 +70,7 @@ pub enum PermissionLevel {
     Ask,
     Allow,
     Reject,
+    Delegate,
 }
 
 impl PermissionLevel {
@@ -73,6 +78,7 @@ impl PermissionLevel {
         PermissionLevel::Ask,
         PermissionLevel::Allow,
         PermissionLevel::Reject,
+        PermissionLevel::Delegate,
     ];
 
     pub fn label(self) -> &'static str {
@@ -80,6 +86,7 @@ impl PermissionLevel {
             PermissionLevel::Ask => "ask",
             PermissionLevel::Allow => "allow",
             PermissionLevel::Reject => "reject",
+            PermissionLevel::Delegate => "delegate",
         }
     }
 }
@@ -686,12 +693,19 @@ impl App {
     }
 
     /// Commits the permission level selection and adds the permission rule.
+    /// For `delegate`, transitions to entering the target program name first.
     pub fn commit_permission_level(&mut self) {
+        let level = PermissionLevel::ALL[self.selected_permission_level];
+        if level == PermissionLevel::Delegate {
+            self.input_mode = InputMode::EnteringDelegateTo;
+            self.edit_buffer.clear();
+            return;
+        }
+
         let Some(tool) = self.pending_permission_tool.take() else {
             self.input_mode = InputMode::Normal;
             return;
         };
-        let level = PermissionLevel::ALL[self.selected_permission_level];
         let mut obj = serde_json::Map::new();
         obj.insert("tool".to_string(), Value::String(tool.clone()));
         obj.insert(
@@ -709,7 +723,38 @@ impl App {
         self.config.set("amp.permissions", Value::Array(arr));
 
         self.status_message = Some(format!("Added permission: {} = {}", tool, level.label()));
-        self.input_mode = InputMode::Normal;
+        self.input_mode = InputMode::ConfirmAdvancedEdit;
+    }
+
+    /// Commits the delegate target and adds the permission rule with the `to` field.
+    pub fn commit_delegate_to(&mut self) {
+        if self.edit_buffer.trim().is_empty() {
+            self.status_message = Some("Program name cannot be empty.".to_string());
+            return;
+        }
+        let to = self.edit_buffer.trim().to_string();
+
+        let Some(tool) = self.pending_permission_tool.take() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert("tool".to_string(), Value::String(tool.clone()));
+        obj.insert("action".to_string(), Value::String("delegate".to_string()));
+        obj.insert("to".to_string(), Value::String(to.clone()));
+
+        let mut arr = self
+            .config
+            .get("amp.permissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        arr.push(Value::Object(obj));
+        self.config.set("amp.permissions", Value::Array(arr));
+
+        self.status_message = Some(format!("Added permission: {} = delegate to {}", tool, to));
+        self.edit_buffer.clear();
+        self.input_mode = InputMode::ConfirmAdvancedEdit;
     }
 
     /// Moves permission level selection up.
@@ -724,6 +769,29 @@ impl App {
         if self.selected_permission_level < PermissionLevel::ALL.len() - 1 {
             self.selected_permission_level += 1;
         }
+    }
+
+    /// Confirms opening $EDITOR for the last-added permission rule.
+    /// Returns an `EditorRequest` for the last item in the permissions array.
+    pub fn confirm_advanced_edit(&mut self) -> Option<EditorRequest> {
+        self.input_mode = InputMode::Normal;
+        let arr = self
+            .config
+            .get("amp.permissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let idx = arr.len().checked_sub(1)?;
+        Some(EditorRequest {
+            key: "amp.permissions".to_string(),
+            value: arr[idx].clone(),
+            array_index: Some(idx),
+        })
+    }
+
+    /// Declines opening $EDITOR after adding a permission rule.
+    pub fn decline_advanced_edit(&mut self) {
+        self.input_mode = InputMode::Normal;
     }
 
     /// Moves type selection up.
@@ -1540,7 +1608,9 @@ mod tests {
         app.permission_level_down();
         assert_eq!(app.selected_permission_level, 2);
         app.permission_level_down();
-        assert_eq!(app.selected_permission_level, 2); // stays at last
+        assert_eq!(app.selected_permission_level, 3); // delegate
+        app.permission_level_down();
+        assert_eq!(app.selected_permission_level, 3); // stays at last
     }
 
     #[test]
@@ -1549,7 +1619,7 @@ mod tests {
         app.pending_permission_tool = Some("Bash".to_string());
         app.selected_permission_level = 1; // allow
         app.commit_permission_level();
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.input_mode, InputMode::ConfirmAdvancedEdit);
         assert!(app.pending_permission_tool.is_none());
 
         let arr = app.config.get("amp.permissions");
@@ -1580,7 +1650,7 @@ mod tests {
         assert_eq!(app.selected_permission_level, 2);
         app.commit_permission_level();
 
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.input_mode, InputMode::ConfirmAdvancedEdit);
         let arr = app.config.get("amp.permissions");
         let items = arr.as_array().unwrap();
         assert_eq!(items.len(), 1);
@@ -1598,5 +1668,104 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.pending_permission_tool.is_none());
         assert_eq!(app.selected_permission_level, 0);
+    }
+
+    #[test]
+    fn test_confirm_advanced_edit_returns_editor_request() {
+        let mut app = test_app();
+        // Add a permission rule first
+        app.pending_permission_tool = Some("Bash".to_string());
+        app.selected_permission_level = 0; // ask
+        app.commit_permission_level();
+        assert_eq!(app.input_mode, InputMode::ConfirmAdvancedEdit);
+
+        let req = app.confirm_advanced_edit();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.permissions");
+        assert_eq!(req.array_index, Some(0));
+        assert_eq!(req.value["tool"], Value::String("Bash".into()));
+        assert_eq!(req.value["action"], Value::String("ask".into()));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_decline_advanced_edit_returns_to_normal() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ConfirmAdvancedEdit;
+        app.decline_advanced_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_permission_full_flow_with_decline() {
+        let mut app = test_app();
+        app.selected_section = 1; // Permissions
+        app.focus = Focus::Settings;
+
+        app.add_array_item();
+        app.edit_buffer = "Bash".to_string();
+        app.commit_permission_tool();
+        app.commit_permission_level(); // defaults to "ask"
+        assert_eq!(app.input_mode, InputMode::ConfirmAdvancedEdit);
+
+        app.decline_advanced_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let arr = app.config.get("amp.permissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tool"], Value::String("Bash".into()));
+    }
+
+    #[test]
+    fn test_delegate_level_prompts_for_to() {
+        let mut app = test_app();
+        app.pending_permission_tool = Some("Bash".to_string());
+        app.selected_permission_level = 3; // Delegate
+        app.commit_permission_level();
+        assert_eq!(app.input_mode, InputMode::EnteringDelegateTo);
+        assert!(app.pending_permission_tool.is_some());
+    }
+
+    #[test]
+    fn test_delegate_to_empty_rejected() {
+        let mut app = test_app();
+        app.input_mode = InputMode::EnteringDelegateTo;
+        app.pending_permission_tool = Some("Bash".to_string());
+        app.edit_buffer = "  ".to_string();
+        app.commit_delegate_to();
+        assert_eq!(app.input_mode, InputMode::EnteringDelegateTo);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_delegate_full_flow() {
+        let mut app = test_app();
+        app.selected_section = 1; // Permissions
+        app.focus = Focus::Settings;
+
+        app.add_array_item();
+        app.edit_buffer = "*".to_string();
+        app.commit_permission_tool();
+
+        // Select delegate (index 3)
+        app.selected_permission_level = 3;
+        app.commit_permission_level();
+        assert_eq!(app.input_mode, InputMode::EnteringDelegateTo);
+
+        app.edit_buffer = "my-permission-helper".to_string();
+        app.commit_delegate_to();
+        assert_eq!(app.input_mode, InputMode::ConfirmAdvancedEdit);
+
+        app.decline_advanced_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let arr = app.config.get("amp.permissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tool"], Value::String("*".into()));
+        assert_eq!(items[0]["action"], Value::String("delegate".into()));
+        assert_eq!(items[0]["to"], Value::String("my-permission-helper".into()));
     }
 }

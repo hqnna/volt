@@ -183,6 +183,26 @@ fn handle_modal_input(app: &mut App, key: KeyCode) -> Option<EditorRequest> {
             }
             None
         }
+        InputMode::EnteringDelegateTo => {
+            match key {
+                KeyCode::Enter => app.commit_delegate_to(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
+        InputMode::ConfirmAdvancedEdit => match key {
+            KeyCode::Char('y') | KeyCode::Enter => app.confirm_advanced_edit(),
+            KeyCode::Char('n') | KeyCode::Esc => {
+                app.decline_advanced_edit();
+                None
+            }
+            _ => None,
+        },
         InputMode::Normal => None,
     }
 }
