@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Ta
 use ratatui::Frame;
 use serde_json::Value;
 
-use crate::app::{App, CustomKeyType, Focus, InputMode, SettingEntry};
+use crate::app::{App, CustomKeyType, Focus, InputMode, PermissionLevel, SettingEntry};
 use crate::settings::{Section, SettingType};
 
 /// Sidebar width in columns.
@@ -439,6 +439,7 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
 fn render_edit_overlay(frame: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::SelectingType => render_type_select_overlay(frame, app),
+        InputMode::SelectingPermissionLevel => render_permission_level_overlay(frame, app),
         InputMode::Normal => {}
         _ => render_text_input_overlay(frame, app),
     }
@@ -458,6 +459,7 @@ fn render_text_input_overlay(frame: &mut Frame, app: &App) {
     let title = match app.input_mode {
         InputMode::EnteringKeyName => " Enter Key Name (Enter to confirm, Esc to cancel) ",
         InputMode::EnteringCustomValue => " Enter Value (Enter to save, Esc to cancel) ",
+        InputMode::EnteringPermissionTool => " Enter Tool Name (Enter to confirm, Esc to cancel) ",
         _ => " Edit Value (Enter to save, Esc to cancel) ",
     };
 
@@ -505,6 +507,45 @@ fn render_type_select_overlay(frame: &mut Frame, app: &App) {
                 Style::default().fg(Color::White)
             };
             ListItem::new(format!("  {}", t.label())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup_area);
+}
+
+/// Renders the permission level selection overlay.
+fn render_permission_level_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let item_count = PermissionLevel::ALL.len() as u16;
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = (item_count + 2).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Select Permission (Enter to confirm, Esc to cancel) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let items: Vec<ListItem> = PermissionLevel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let style = if i == app.selected_permission_level {
+                selected_style
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", level.label())).style(style)
         })
         .collect();
 

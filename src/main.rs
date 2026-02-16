@@ -161,6 +161,28 @@ fn handle_modal_input(app: &mut App, key: KeyCode) -> Option<EditorRequest> {
             }
             None
         }
+        InputMode::EnteringPermissionTool => {
+            match key {
+                KeyCode::Enter => app.commit_permission_tool(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
+        InputMode::SelectingPermissionLevel => {
+            match key {
+                KeyCode::Enter => app.commit_permission_level(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Up | KeyCode::Char('k') => app.permission_level_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.permission_level_down(),
+                _ => {}
+            }
+            None
+        }
         InputMode::Normal => None,
     }
 }

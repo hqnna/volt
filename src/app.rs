@@ -24,6 +24,10 @@ pub enum InputMode {
     SelectingType,
     /// Entering a value for a new custom key (string/number).
     EnteringCustomValue,
+    /// Entering the tool name for a new permission rule.
+    EnteringPermissionTool,
+    /// Selecting the permission level (ask/allow/reject) for a new permission rule.
+    SelectingPermissionLevel,
 }
 
 /// Value type choices for custom keys in the Advanced section.
@@ -56,6 +60,30 @@ impl CustomKeyType {
     }
 }
 
+/// Permission level choices for permission rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionLevel {
+    Ask,
+    Allow,
+    Reject,
+}
+
+impl PermissionLevel {
+    pub const ALL: &[PermissionLevel] = &[
+        PermissionLevel::Ask,
+        PermissionLevel::Allow,
+        PermissionLevel::Reject,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PermissionLevel::Ask => "ask",
+            PermissionLevel::Allow => "allow",
+            PermissionLevel::Reject => "reject",
+        }
+    }
+}
+
 /// A request to open an external editor, returned from app methods.
 #[derive(Debug, Clone)]
 pub struct EditorRequest {
@@ -83,6 +111,10 @@ pub struct App {
     pub pending_custom_key: Option<String>,
     /// Selected type index during type selection.
     pub selected_type: usize,
+    /// Pending tool name for permission add flow.
+    pub pending_permission_tool: Option<String>,
+    /// Selected permission level index during permission add flow.
+    pub selected_permission_level: usize,
 }
 
 impl App {
@@ -99,6 +131,8 @@ impl App {
             edit_buffer: String::new(),
             pending_custom_key: None,
             selected_type: 0,
+            pending_permission_tool: None,
+            selected_permission_level: 0,
         }
     }
 
@@ -344,8 +378,13 @@ impl App {
                 self.edit_buffer.clear();
             }
             SettingType::ArrayObject => {
-                self.input_mode = InputMode::EditingValue;
-                self.edit_buffer.clear();
+                if def.key == "amp.permissions" {
+                    self.input_mode = InputMode::EnteringPermissionTool;
+                    self.edit_buffer.clear();
+                } else {
+                    self.input_mode = InputMode::EditingValue;
+                    self.edit_buffer.clear();
+                }
             }
             _ => {}
         }
@@ -634,6 +673,59 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Commits the permission tool name and moves to permission level selection.
+    pub fn commit_permission_tool(&mut self) {
+        if self.edit_buffer.trim().is_empty() {
+            self.status_message = Some("Tool name cannot be empty.".to_string());
+            return;
+        }
+        self.pending_permission_tool = Some(self.edit_buffer.trim().to_string());
+        self.edit_buffer.clear();
+        self.selected_permission_level = 0;
+        self.input_mode = InputMode::SelectingPermissionLevel;
+    }
+
+    /// Commits the permission level selection and adds the permission rule.
+    pub fn commit_permission_level(&mut self) {
+        let Some(tool) = self.pending_permission_tool.take() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        let level = PermissionLevel::ALL[self.selected_permission_level];
+        let mut obj = serde_json::Map::new();
+        obj.insert("tool".to_string(), Value::String(tool.clone()));
+        obj.insert(
+            "action".to_string(),
+            Value::String(level.label().to_string()),
+        );
+
+        let mut arr = self
+            .config
+            .get("amp.permissions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        arr.push(Value::Object(obj));
+        self.config.set("amp.permissions", Value::Array(arr));
+
+        self.status_message = Some(format!("Added permission: {} = {}", tool, level.label()));
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Moves permission level selection up.
+    pub fn permission_level_up(&mut self) {
+        if self.selected_permission_level > 0 {
+            self.selected_permission_level -= 1;
+        }
+    }
+
+    /// Moves permission level selection down.
+    pub fn permission_level_down(&mut self) {
+        if self.selected_permission_level < PermissionLevel::ALL.len() - 1 {
+            self.selected_permission_level += 1;
+        }
+    }
+
     /// Moves type selection up.
     pub fn type_select_up(&mut self) {
         if self.selected_type > 0 {
@@ -654,6 +746,8 @@ impl App {
         self.edit_buffer.clear();
         self.pending_custom_key = None;
         self.selected_type = 0;
+        self.pending_permission_tool = None;
+        self.selected_permission_level = 0;
     }
 
     /// Resets the currently selected setting to its default.
@@ -1402,5 +1496,107 @@ mod tests {
             app.config.get("my.custom.setting"),
             Value::String("my value".into())
         );
+    }
+
+    #[test]
+    fn test_permission_add_starts_tool_prompt() {
+        let mut app = test_app();
+        app.selected_section = 1; // Permissions
+        app.focus = Focus::Settings;
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringPermissionTool);
+        assert!(app.edit_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_permission_tool_empty_rejected() {
+        let mut app = test_app();
+        app.input_mode = InputMode::EnteringPermissionTool;
+        app.edit_buffer = "  ".to_string();
+        app.commit_permission_tool();
+        assert_eq!(app.input_mode, InputMode::EnteringPermissionTool);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_permission_tool_moves_to_level_select() {
+        let mut app = test_app();
+        app.input_mode = InputMode::EnteringPermissionTool;
+        app.edit_buffer = "Bash".to_string();
+        app.commit_permission_tool();
+        assert_eq!(app.input_mode, InputMode::SelectingPermissionLevel);
+        assert_eq!(app.pending_permission_tool.as_deref(), Some("Bash"));
+        assert_eq!(app.selected_permission_level, 0);
+    }
+
+    #[test]
+    fn test_permission_level_navigation() {
+        let mut app = test_app();
+        app.selected_permission_level = 0;
+        app.permission_level_up();
+        assert_eq!(app.selected_permission_level, 0);
+        app.permission_level_down();
+        assert_eq!(app.selected_permission_level, 1);
+        app.permission_level_down();
+        assert_eq!(app.selected_permission_level, 2);
+        app.permission_level_down();
+        assert_eq!(app.selected_permission_level, 2); // stays at last
+    }
+
+    #[test]
+    fn test_permission_commit_adds_rule() {
+        let mut app = test_app();
+        app.pending_permission_tool = Some("Bash".to_string());
+        app.selected_permission_level = 1; // allow
+        app.commit_permission_level();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_permission_tool.is_none());
+
+        let arr = app.config.get("amp.permissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tool"], Value::String("Bash".into()));
+        assert_eq!(items[0]["action"], Value::String("allow".into()));
+    }
+
+    #[test]
+    fn test_permission_full_flow() {
+        let mut app = test_app();
+        app.selected_section = 1; // Permissions
+        app.focus = Focus::Settings;
+
+        // Step 1: press 'a' to start
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringPermissionTool);
+
+        // Step 2: enter tool name
+        app.edit_buffer = "Read".to_string();
+        app.commit_permission_tool();
+        assert_eq!(app.input_mode, InputMode::SelectingPermissionLevel);
+
+        // Step 3: select "reject" (index 2)
+        app.permission_level_down();
+        app.permission_level_down();
+        assert_eq!(app.selected_permission_level, 2);
+        app.commit_permission_level();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        let arr = app.config.get("amp.permissions");
+        let items = arr.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tool"], Value::String("Read".into()));
+        assert_eq!(items[0]["action"], Value::String("reject".into()));
+    }
+
+    #[test]
+    fn test_cancel_permission_clears_state() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SelectingPermissionLevel;
+        app.pending_permission_tool = Some("Bash".to_string());
+        app.selected_permission_level = 1;
+        app.cancel_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_permission_tool.is_none());
+        assert_eq!(app.selected_permission_level, 0);
     }
 }
