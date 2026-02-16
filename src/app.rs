@@ -419,8 +419,14 @@ impl App {
             Some(i) => (i + 1) % options.len(),
             None => 0,
         };
-        self.config
-            .set(def.key, Value::String(options[next_idx].to_string()));
+        let next_value = options[next_idx];
+        if next_value == "Custom" && def.allows_custom {
+            self.input_mode = InputMode::EditingValue;
+            self.edit_buffer.clear();
+        } else {
+            self.config
+                .set(def.key, Value::String(next_value.to_string()));
+        }
     }
 
     /// Commits the current inline edit.
@@ -785,6 +791,36 @@ mod tests {
         assert_eq!(
             app.config.get("amp.terminal.theme"),
             Value::String("dark".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cycle_enum_custom_prompts_for_value() {
+        let mut app = test_app();
+        app.focus = Focus::Settings;
+        let entries = app.current_settings();
+        let theme_idx = entries
+            .iter()
+            .position(|e| matches!(e, SettingEntry::Known(d) if d.key == "amp.terminal.theme"))
+            .unwrap();
+        app.selected_setting = theme_idx;
+
+        // Set theme to "nord" (the option just before "Custom")
+        app.config
+            .set("amp.terminal.theme", Value::String("nord".to_string()));
+
+        // Cycling from "nord" should land on "Custom" and enter editing mode
+        app.activate_setting();
+        assert_eq!(app.input_mode, InputMode::EditingValue);
+        assert!(app.edit_buffer.is_empty());
+
+        // Typing a custom name and committing should set it
+        app.edit_buffer = "my-custom-theme".to_string();
+        app.commit_edit();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.config.get("amp.terminal.theme"),
+            Value::String("my-custom-theme".to_string())
         );
     }
 

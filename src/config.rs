@@ -157,7 +157,7 @@ impl Config {
             key
         );
 
-        if def.setting_type == SettingType::StringEnum {
+        if def.setting_type == SettingType::StringEnum && !def.allows_custom {
             if let (Some(options), Some(s)) = (def.enum_options, value.as_str()) {
                 if !options.contains(&s) {
                     anyhow::bail!(

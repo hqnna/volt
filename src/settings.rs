@@ -22,6 +22,8 @@ pub struct SettingDef {
     pub default: Value,
     /// For enum types, the list of valid options.
     pub enum_options: Option<&'static [&'static str]>,
+    /// Whether the user may enter a custom value beyond the enum options.
+    pub allows_custom: bool,
 }
 
 /// Which section a setting belongs to.
@@ -90,84 +92,98 @@ pub fn known_settings() -> Vec<SettingDef> {
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.showCosts",
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.notifications.enabled",
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.git.commit.ampThread.enabled",
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.git.commit.coauthor.enabled",
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.tab.clipboard.enabled",
             setting_type: SettingType::Boolean,
             default: Value::Bool(true),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.bitbucketToken",
             setting_type: SettingType::String,
             default: Value::String(String::new()),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.skills.path",
             setting_type: SettingType::String,
             default: Value::String(String::new()),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.terminal.theme",
             setting_type: SettingType::StringEnum,
             default: Value::String(String::new()),
             enum_options: Some(THEME_OPTIONS),
+            allows_custom: true,
         },
         SettingDef {
             key: "amp.terminal.commands.nodeSpawn.loadProfile",
             setting_type: SettingType::StringEnum,
             default: Value::String(String::new()),
             enum_options: Some(LOAD_PROFILE_OPTIONS),
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.updates.mode",
             setting_type: SettingType::StringEnum,
             default: Value::String(String::new()),
             enum_options: Some(UPDATE_MODE_OPTIONS),
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.internal.deepReasoningEffort",
             setting_type: SettingType::StringEnum,
             default: Value::String(String::new()),
             enum_options: Some(DEEP_REASONING_OPTIONS),
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.defaultVisibility",
             setting_type: SettingType::Object,
             default: Value::Object(serde_json::Map::new()),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.fuzzy.alwaysIncludePaths",
             setting_type: SettingType::ArrayString,
             default: Value::Array(vec![]),
             enum_options: None,
+            allows_custom: false,
         },
         // Permissions
         SettingDef {
@@ -175,6 +191,7 @@ pub fn known_settings() -> Vec<SettingDef> {
             setting_type: SettingType::ArrayObject,
             default: Value::Array(vec![]),
             enum_options: None,
+            allows_custom: false,
         },
         // Tools
         SettingDef {
@@ -182,12 +199,14 @@ pub fn known_settings() -> Vec<SettingDef> {
             setting_type: SettingType::ArrayString,
             default: Value::Array(vec![]),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.tools.stopTimeout",
             setting_type: SettingType::Number,
             default: Value::Number(serde_json::Number::from(300)),
             enum_options: None,
+            allows_custom: false,
         },
         // MCPs
         SettingDef {
@@ -195,12 +214,14 @@ pub fn known_settings() -> Vec<SettingDef> {
             setting_type: SettingType::Object,
             default: Value::Object(serde_json::Map::new()),
             enum_options: None,
+            allows_custom: false,
         },
         SettingDef {
             key: "amp.mcpPermissions",
             setting_type: SettingType::ArrayObject,
             default: Value::Array(vec![]),
             enum_options: None,
+            allows_custom: false,
         },
     ]
 }
