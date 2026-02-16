@@ -218,7 +218,7 @@ impl App {
                     self.input_mode = InputMode::EditingValue;
                     let current = self.config.get(def.key);
                     self.edit_buffer = match &current {
-                        Value::String(s) => format!("\"{}\"", s),
+                        Value::String(s) => s.clone(),
                         Value::Number(n) => n.to_string(),
                         _ => String::new(),
                     };
@@ -341,7 +341,7 @@ impl App {
         match def.setting_type {
             SettingType::ArrayString => {
                 self.input_mode = InputMode::EditingValue;
-                self.edit_buffer = "\"\"".to_string();
+                self.edit_buffer.clear();
             }
             SettingType::ArrayObject => {
                 self.input_mode = InputMode::EditingValue;
@@ -426,18 +426,11 @@ impl App {
         let next_value = options[next_idx];
         if next_value == "Custom" && def.allows_custom {
             self.input_mode = InputMode::EditingValue;
-            self.edit_buffer = "\"\"".to_string();
+            self.edit_buffer.clear();
         } else {
             self.config
                 .set(def.key, Value::String(next_value.to_string()));
         }
-    }
-
-    /// Strips surrounding double quotes from a string, if present.
-    fn strip_quotes(s: &str) -> &str {
-        s.strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or(s)
     }
 
     /// Commits the current inline edit.
@@ -463,15 +456,14 @@ impl App {
 
         match def.setting_type {
             SettingType::ArrayString => {
-                let stripped = Self::strip_quotes(&self.edit_buffer).to_string();
-                if !stripped.is_empty() {
+                if !self.edit_buffer.is_empty() {
                     let mut arr = self
                         .config
                         .get(def.key)
                         .as_array()
                         .cloned()
                         .unwrap_or_default();
-                    arr.push(Value::String(stripped));
+                    arr.push(Value::String(self.edit_buffer.clone()));
                     self.config.set(def.key, Value::Array(arr));
                     self.status_message = Some(format!("Added item to {}", def.key));
                 }
@@ -522,7 +514,7 @@ impl App {
                     return;
                 }
             }
-            _ => Value::String(Self::strip_quotes(&self.edit_buffer).to_string()),
+            _ => Value::String(self.edit_buffer.clone()),
         };
 
         if let Err(e) = Config::validate_value(def.key, &value) {
@@ -576,7 +568,7 @@ impl App {
             }
             CustomKeyType::String => {
                 self.input_mode = InputMode::EnteringCustomValue;
-                self.edit_buffer = "\"\"".to_string();
+                self.edit_buffer.clear();
                 None
             }
             CustomKeyType::Number => {
@@ -613,8 +605,8 @@ impl App {
         let chosen = CustomKeyType::ALL[self.selected_type];
         match chosen {
             CustomKeyType::String => {
-                let stripped = Self::strip_quotes(&self.edit_buffer).to_string();
-                self.config.set(&key, Value::String(stripped));
+                self.config
+                    .set(&key, Value::String(self.edit_buffer.clone()));
                 self.status_message = Some(format!("Added '{}'", key));
             }
             CustomKeyType::Number => {
@@ -829,10 +821,10 @@ mod tests {
         // Cycling from "nord" should land on "Custom" and enter editing mode
         app.activate_setting();
         assert_eq!(app.input_mode, InputMode::EditingValue);
-        assert_eq!(app.edit_buffer, "\"\"");
+        assert_eq!(app.edit_buffer, "");
 
         // Typing a custom name and committing should set it
-        app.edit_buffer = "\"my-custom-theme\"".to_string();
+        app.edit_buffer = "my-custom-theme".to_string();
         app.commit_edit();
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(
