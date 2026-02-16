@@ -40,6 +40,8 @@ pub enum InputMode {
     SelectingMcpPermissionLevel,
     /// Confirming whether to open $EDITOR after adding an MCP permission rule.
     ConfirmMcpEdit,
+    /// Entering the server name for a new MCP server config.
+    EnteringMcpServerName,
 }
 
 /// Value type choices for custom keys in the Advanced section.
@@ -133,6 +135,8 @@ pub struct EditorRequest {
     pub value: Value,
     /// For array<object>, the index of the item being edited.
     pub array_index: Option<usize>,
+    /// For object entries (e.g. amp.mcpServers), the key within the object being edited.
+    pub object_key: Option<String>,
 }
 
 /// Application state.
@@ -228,7 +232,7 @@ impl App {
             self.single_key_item_count()
         } else if self.current_section().is_split_panel() {
             match self.mcp_focus {
-                McpFocus::Configs => self.mcp_config_entries().len(),
+                McpFocus::Configs => self.mcp_config_count(),
                 McpFocus::Permissions => self.mcp_permission_item_count(),
             }
         } else {
@@ -247,13 +251,18 @@ impl App {
         }
     }
 
-    /// Returns the config entries for the MCPs top panel (amp.mcpServers).
-    pub fn mcp_config_entries(&self) -> Vec<SettingEntry> {
-        settings::known_settings()
-            .into_iter()
-            .filter(|s| s.key == "amp.mcpServers")
-            .map(SettingEntry::Known)
-            .collect()
+    /// Returns the sorted server names from amp.mcpServers.
+    pub fn mcp_server_names(&self) -> Vec<String> {
+        self.config
+            .get("amp.mcpServers")
+            .as_object()
+            .map(|obj| obj.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns the number of MCP server config entries.
+    pub fn mcp_config_count(&self) -> usize {
+        self.mcp_server_names().len()
     }
 
     /// Returns the number of MCP permission items.
@@ -289,7 +298,7 @@ impl App {
                             } else {
                                 // Move focus to configs panel
                                 self.mcp_focus = McpFocus::Configs;
-                                let count = self.mcp_config_entries().len();
+                                let count = self.mcp_config_count();
                                 self.selected_setting = if count > 0 { count - 1 } else { 0 };
                             }
                         }
@@ -316,7 +325,7 @@ impl App {
                 if self.current_section().is_split_panel() {
                     match self.mcp_focus {
                         McpFocus::Configs => {
-                            let count = self.mcp_config_entries().len();
+                            let count = self.mcp_config_count();
                             if count > 0 && self.selected_setting < count - 1 {
                                 self.selected_setting += 1;
                             } else {
@@ -390,6 +399,7 @@ impl App {
                     key: def.key.to_string(),
                     value: self.config.get(def.key),
                     array_index: None,
+                    object_key: None,
                 }),
                 SettingType::ArrayObject => {
                     let arr = self.config.get(def.key);
@@ -404,6 +414,7 @@ impl App {
                             key: def.key.to_string(),
                             value: items[idx].clone(),
                             array_index: Some(idx),
+                            object_key: None,
                         })
                     }
                 }
@@ -419,6 +430,7 @@ impl App {
                     key: key.clone(),
                     value,
                     array_index: None,
+                    object_key: None,
                 })
             }
         }
@@ -438,6 +450,7 @@ impl App {
             key: def.key.to_string(),
             value: item.clone(),
             array_index: Some(self.selected_setting),
+            object_key: None,
         })
     }
 
@@ -445,16 +458,16 @@ impl App {
     fn activate_mcp_setting(&mut self) -> Option<EditorRequest> {
         match self.mcp_focus {
             McpFocus::Configs => {
-                let entries = self.mcp_config_entries();
-                let entry = entries.get(self.selected_setting)?;
-                match entry {
-                    SettingEntry::Known(def) => Some(EditorRequest {
-                        key: def.key.to_string(),
-                        value: self.config.get(def.key),
-                        array_index: None,
-                    }),
-                    _ => None,
-                }
+                let server_names = self.mcp_server_names();
+                let name = server_names.get(self.selected_setting)?;
+                let servers = self.config.get("amp.mcpServers");
+                let server_config = servers.get(name)?.clone();
+                Some(EditorRequest {
+                    key: "amp.mcpServers".to_string(),
+                    value: server_config,
+                    array_index: None,
+                    object_key: Some(name.clone()),
+                })
             }
             McpFocus::Permissions => {
                 let arr = self.config.get("amp.mcpPermissions");
@@ -464,6 +477,7 @@ impl App {
                     key: "amp.mcpPermissions".to_string(),
                     value: item.clone(),
                     array_index: Some(self.selected_mcp_permission),
+                    object_key: None,
                 })
             }
         }
@@ -474,16 +488,15 @@ impl App {
         if self.current_section().is_split_panel() {
             match self.mcp_focus {
                 McpFocus::Configs => {
-                    let entries = self.mcp_config_entries();
-                    let entry = entries.get(self.selected_setting)?;
-                    let (key, value) = match entry {
-                        SettingEntry::Known(def) => (def.key.to_string(), self.config.get(def.key)),
-                        SettingEntry::Unknown(key) => (key.clone(), self.config.get(key)),
-                    };
+                    let server_names = self.mcp_server_names();
+                    let name = server_names.get(self.selected_setting)?;
+                    let servers = self.config.get("amp.mcpServers");
+                    let server_config = servers.get(name)?.clone();
                     return Some(EditorRequest {
-                        key,
-                        value,
+                        key: "amp.mcpServers".to_string(),
+                        value: server_config,
                         array_index: None,
+                        object_key: Some(name.clone()),
                     });
                 }
                 McpFocus::Permissions => {
@@ -495,6 +508,7 @@ impl App {
                             key: "amp.mcpPermissions".to_string(),
                             value: item.clone(),
                             array_index: Some(self.selected_mcp_permission),
+                            object_key: None,
                         });
                 }
             }
@@ -516,29 +530,38 @@ impl App {
             key,
             value,
             array_index: None,
+            object_key: None,
         })
     }
 
     /// Applies the result from an external editor back to the config.
     pub fn apply_editor_result(&mut self, request: &EditorRequest, edited: Value) {
-        match request.array_index {
-            Some(idx) => {
-                let mut arr = self
-                    .config
-                    .get(&request.key)
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                if idx < arr.len() {
-                    arr[idx] = edited;
-                }
-                self.config.set(&request.key, Value::Array(arr));
+        if let Some(ref obj_key) = request.object_key {
+            let mut obj = self
+                .config
+                .get(&request.key)
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            obj.insert(obj_key.clone(), edited);
+            self.config.set(&request.key, Value::Object(obj));
+            self.status_message = Some(format!("Updated {} in {}", obj_key, request.key));
+        } else if let Some(idx) = request.array_index {
+            let mut arr = self
+                .config
+                .get(&request.key)
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if idx < arr.len() {
+                arr[idx] = edited;
             }
-            None => {
-                self.config.set(&request.key, edited);
-            }
+            self.config.set(&request.key, Value::Array(arr));
+            self.status_message = Some(format!("Updated {}", request.key));
+        } else {
+            self.config.set(&request.key, edited);
+            self.status_message = Some(format!("Updated {}", request.key));
         }
-        self.status_message = Some(format!("Updated {}", request.key));
     }
 
     /// Adds an item to a string array setting (prompts for value via edit buffer).
@@ -548,9 +571,17 @@ impl App {
             return;
         }
 
-        if self.current_section().is_split_panel() && self.mcp_focus == McpFocus::Permissions {
-            self.start_add_mcp_permission();
-            return;
+        if self.current_section().is_split_panel() {
+            match self.mcp_focus {
+                McpFocus::Configs => {
+                    self.start_add_mcp_server();
+                    return;
+                }
+                McpFocus::Permissions => {
+                    self.start_add_mcp_permission();
+                    return;
+                }
+            }
         }
 
         let def = self.selected_array_def();
@@ -579,9 +610,17 @@ impl App {
     /// Deletes an item from an array setting.
     /// In single-key sections, deletes the selected item; otherwise deletes the last.
     pub fn delete_array_item(&mut self) {
-        if self.current_section().is_split_panel() && self.mcp_focus == McpFocus::Permissions {
-            self.delete_mcp_permission_item();
-            return;
+        if self.current_section().is_split_panel() {
+            match self.mcp_focus {
+                McpFocus::Configs => {
+                    self.delete_mcp_config_item();
+                    return;
+                }
+                McpFocus::Permissions => {
+                    self.delete_mcp_permission_item();
+                    return;
+                }
+            }
         }
 
         let section = self.current_section();
@@ -819,6 +858,7 @@ impl App {
                     key: key.clone(),
                     value: Value::Object(serde_json::Map::new()),
                     array_index: None,
+                    object_key: None,
                 };
                 self.pending_custom_key = None;
                 Some(req)
@@ -970,6 +1010,7 @@ impl App {
             key: "amp.permissions".to_string(),
             value: arr[idx].clone(),
             array_index: Some(idx),
+            object_key: None,
         })
     }
 
@@ -1010,10 +1051,22 @@ impl App {
         if self.current_section().is_split_panel() {
             match self.mcp_focus {
                 McpFocus::Configs => {
-                    let entries = self.mcp_config_entries();
-                    if let Some(SettingEntry::Known(def)) = entries.get(self.selected_setting) {
-                        self.config.remove(def.key);
-                        self.status_message = Some(format!("Reset {} to default", def.key));
+                    let server_names = self.mcp_server_names();
+                    if let Some(name) = server_names.get(self.selected_setting) {
+                        let mut obj = self
+                            .config
+                            .get("amp.mcpServers")
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default();
+                        obj.remove(name);
+                        self.config
+                            .set("amp.mcpServers", Value::Object(obj.clone()));
+                        self.status_message = Some(format!("Removed server '{}'", name));
+                        let count = obj.len();
+                        if count > 0 && self.selected_setting >= count {
+                            self.selected_setting = count - 1;
+                        }
                     }
                 }
                 McpFocus::Permissions => {
@@ -1052,6 +1105,58 @@ impl App {
                     self.selected_setting = count - 1;
                 }
             }
+        }
+    }
+
+    /// Starts the "add MCP server" flow.
+    fn start_add_mcp_server(&mut self) {
+        self.input_mode = InputMode::EnteringMcpServerName;
+        self.edit_buffer.clear();
+    }
+
+    /// Commits the server name and opens `$EDITOR` for the new server config.
+    pub fn commit_mcp_server_name(&mut self) -> Option<EditorRequest> {
+        let name = self.edit_buffer.trim().to_string();
+        if name.is_empty() {
+            self.status_message = Some("Server name cannot be empty.".to_string());
+            return None;
+        }
+        let servers = self.config.get("amp.mcpServers");
+        if servers.get(&name).is_some() {
+            self.status_message = Some(format!("Server '{}' already exists.", name));
+            return None;
+        }
+        self.edit_buffer.clear();
+        self.input_mode = InputMode::Normal;
+        Some(EditorRequest {
+            key: "amp.mcpServers".to_string(),
+            value: Value::Object(serde_json::Map::new()),
+            array_index: None,
+            object_key: Some(name),
+        })
+    }
+
+    /// Deletes the selected MCP server config.
+    fn delete_mcp_config_item(&mut self) {
+        let server_names = self.mcp_server_names();
+        if server_names.is_empty() {
+            self.status_message = Some("No servers to delete.".to_string());
+            return;
+        }
+        let idx = self.selected_setting.min(server_names.len() - 1);
+        let name = &server_names[idx];
+        let mut obj = self
+            .config
+            .get("amp.mcpServers")
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        obj.remove(name);
+        self.status_message = Some(format!("Removed server '{}'", name));
+        self.config
+            .set("amp.mcpServers", Value::Object(obj.clone()));
+        if !obj.is_empty() && self.selected_setting >= obj.len() {
+            self.selected_setting = obj.len() - 1;
         }
     }
 
@@ -1138,6 +1243,7 @@ impl App {
             key: "amp.mcpPermissions".to_string(),
             value: arr[idx].clone(),
             array_index: Some(idx),
+            object_key: None,
         })
     }
 
@@ -1553,6 +1659,7 @@ mod tests {
             key: "amp.defaultVisibility".to_string(),
             value: Value::Object(serde_json::Map::new()),
             array_index: None,
+            object_key: None,
         };
         let mut map = serde_json::Map::new();
         map.insert("origin".into(), Value::String("private".into()));
@@ -1573,6 +1680,7 @@ mod tests {
             key: "amp.permissions".to_string(),
             value: Value::Object(serde_json::Map::new()),
             array_index: Some(0),
+            object_key: None,
         };
         let mut edited = serde_json::Map::new();
         edited.insert("tool".into(), Value::String("Bash".into()));
@@ -2129,6 +2237,19 @@ mod tests {
     }
 
     #[test]
+    fn test_mcp_server_names() {
+        let app = test_app_with_mcp_permissions();
+        let names = app.mcp_server_names();
+        assert_eq!(names, vec!["test-server"]);
+    }
+
+    #[test]
+    fn test_mcp_config_count() {
+        let app = test_app_with_mcp_permissions();
+        assert_eq!(app.mcp_config_count(), 1);
+    }
+
+    #[test]
     fn test_mcp_navigate_configs_to_permissions() {
         let mut app = test_app_with_mcp_permissions();
         app.focus = Focus::Settings;
@@ -2185,7 +2306,9 @@ mod tests {
         assert!(req.is_some());
         let req = req.unwrap();
         assert_eq!(req.key, "amp.mcpServers");
+        assert_eq!(req.object_key.as_deref(), Some("test-server"));
         assert!(req.array_index.is_none());
+        assert_eq!(req.value["command"], Value::String("npx".into()));
     }
 
     #[test]
@@ -2384,7 +2507,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_reset_configs() {
+    fn test_mcp_reset_configs_deletes_server() {
         let mut app = test_app_with_mcp_permissions();
         app.focus = Focus::Settings;
         app.mcp_focus = McpFocus::Configs;
@@ -2393,6 +2516,7 @@ mod tests {
         app.reset_setting();
         let val = app.config.get("amp.mcpServers");
         assert!(val.as_object().unwrap().is_empty());
+        assert!(app.status_message.unwrap().contains("Removed server"));
     }
 
     #[test]
@@ -2406,7 +2530,9 @@ mod tests {
         assert!(req.is_some());
         let req = req.unwrap();
         assert_eq!(req.key, "amp.mcpServers");
+        assert_eq!(req.object_key.as_deref(), Some("test-server"));
         assert!(req.array_index.is_none());
+        assert_eq!(req.value["command"], Value::String("npx".into()));
     }
 
     #[test]
@@ -2421,6 +2547,113 @@ mod tests {
         let req = req.unwrap();
         assert_eq!(req.key, "amp.mcpPermissions");
         assert_eq!(req.array_index, Some(1));
+    }
+
+    #[test]
+    fn test_mcp_add_server_starts_name_entry() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+        app.add_array_item();
+        assert_eq!(app.input_mode, InputMode::EnteringMcpServerName);
+        assert!(app.edit_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_server_name_empty_rejected() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpServerName;
+        app.edit_buffer = "  ".to_string();
+        let req = app.commit_mcp_server_name();
+        assert!(req.is_none());
+        assert_eq!(app.input_mode, InputMode::EnteringMcpServerName);
+        assert!(app.status_message.unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_mcp_server_name_duplicate_rejected() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpServerName;
+        app.edit_buffer = "test-server".to_string();
+        let req = app.commit_mcp_server_name();
+        assert!(req.is_none());
+        assert_eq!(app.input_mode, InputMode::EnteringMcpServerName);
+        assert!(app.status_message.unwrap().contains("already exists"));
+    }
+
+    #[test]
+    fn test_mcp_server_name_success_returns_editor_request() {
+        let mut app = test_app_with_mcp_permissions();
+        app.input_mode = InputMode::EnteringMcpServerName;
+        app.edit_buffer = "new-server".to_string();
+        let req = app.commit_mcp_server_name();
+        assert!(req.is_some());
+        let req = req.unwrap();
+        assert_eq!(req.key, "amp.mcpServers");
+        assert_eq!(req.object_key.as_deref(), Some("new-server"));
+        assert!(req.value.is_object());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_mcp_delete_config_item() {
+        let mut app = test_app_with_mcp_permissions();
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+        app.selected_setting = 0;
+
+        app.delete_array_item();
+        assert_eq!(app.mcp_config_count(), 0);
+        assert!(app.status_message.unwrap().contains("Removed server"));
+    }
+
+    #[test]
+    fn test_mcp_delete_config_empty() {
+        let mut app = test_app();
+        app.selected_section = 3; // MCPs
+        app.focus = Focus::Settings;
+        app.mcp_focus = McpFocus::Configs;
+
+        app.delete_array_item();
+        assert!(app.status_message.unwrap().contains("No servers"));
+    }
+
+    #[test]
+    fn test_mcp_apply_editor_result_with_object_key() {
+        let mut app = test_app_with_mcp_permissions();
+        let req = EditorRequest {
+            key: "amp.mcpServers".to_string(),
+            value: Value::Object(serde_json::Map::new()),
+            array_index: None,
+            object_key: Some("test-server".to_string()),
+        };
+        let mut edited = serde_json::Map::new();
+        edited.insert("command".into(), Value::String("node".into()));
+        edited.insert(
+            "args".into(),
+            Value::Array(vec![Value::String("server.js".into())]),
+        );
+        app.apply_editor_result(&req, Value::Object(edited));
+        let servers = app.config.get("amp.mcpServers");
+        let server = servers.get("test-server").unwrap();
+        assert_eq!(server["command"], Value::String("node".into()));
+    }
+
+    #[test]
+    fn test_mcp_apply_editor_result_new_server() {
+        let mut app = test_app_with_mcp_permissions();
+        let req = EditorRequest {
+            key: "amp.mcpServers".to_string(),
+            value: Value::Object(serde_json::Map::new()),
+            array_index: None,
+            object_key: Some("brand-new".to_string()),
+        };
+        let mut edited = serde_json::Map::new();
+        edited.insert("url".into(), Value::String("https://example.com".into()));
+        app.apply_editor_result(&req, Value::Object(edited));
+        let servers = app.config.get("amp.mcpServers");
+        assert!(servers.get("brand-new").is_some());
+        assert_eq!(app.mcp_config_count(), 2);
     }
 
     #[test]

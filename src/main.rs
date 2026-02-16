@@ -203,6 +203,18 @@ fn handle_modal_input(app: &mut App, key: KeyCode) -> Option<EditorRequest> {
             }
             _ => None,
         },
+        InputMode::EnteringMcpServerName => {
+            match key {
+                KeyCode::Enter => return app.commit_mcp_server_name(),
+                KeyCode::Esc => app.cancel_edit(),
+                KeyCode::Backspace => {
+                    app.edit_buffer.pop();
+                }
+                KeyCode::Char(c) => app.edit_buffer.push(c),
+                _ => {}
+            }
+            None
+        }
         InputMode::EnteringMcpMatchField => {
             match key {
                 KeyCode::Enter => app.commit_mcp_match_field(),

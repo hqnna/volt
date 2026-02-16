@@ -288,7 +288,7 @@ fn render_mcp_split_panel(frame: &mut Frame, app: &App, area: Rect) {
     render_mcp_permissions_panel(frame, app, halves[1]);
 }
 
-/// Renders the top half: MCP server configs (amp.mcpServers).
+/// Renders the top half: MCP server configs (amp.mcpServers) as per-server rows.
 fn render_mcp_configs_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::Settings && app.mcp_focus == McpFocus::Configs;
     let block = Block::default()
@@ -300,10 +300,11 @@ fn render_mcp_configs_panel(frame: &mut Frame, app: &App, area: Rect) {
             Color::DarkGray
         }));
 
-    let entries = app.mcp_config_entries();
+    let server_names = app.mcp_server_names();
+    let servers = app.config.get("amp.mcpServers");
 
-    if entries.is_empty() {
-        let p = Paragraph::new("No MCP config settings.")
+    if server_names.is_empty() {
+        let p = Paragraph::new(" No servers. Press 'a' to add one, 'e' to open in $EDITOR.")
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         frame.render_widget(p, area);
@@ -315,10 +316,10 @@ fn render_mcp_configs_panel(frame: &mut Frame, app: &App, area: Rect) {
         .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let rows: Vec<Row> = entries
+    let rows: Vec<Row> = server_names
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .map(|(i, name)| {
             let is_selected = is_focused && i == app.selected_setting;
             let base = if is_selected {
                 selected_style
@@ -331,35 +332,20 @@ fn render_mcp_configs_panel(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Yellow)
             };
 
-            let (key, value_display, modified) = match entry {
-                SettingEntry::Known(def) => {
-                    let value = app.config.get(def.key);
-                    let display = format_value(def.setting_type, &value);
-                    let modified = app.config.get_raw(def.key).is_some();
-                    (def.key.to_string(), display, modified)
-                }
-                SettingEntry::Unknown(key) => {
-                    let value = app.config.get(key);
-                    let display = format_json_compact(&value);
-                    (key.clone(), display, true)
-                }
-            };
-
-            let key_style = if modified {
-                base.add_modifier(Modifier::BOLD)
-            } else {
-                base
-            };
+            let config_display = servers.get(name).map(format_cell_value).unwrap_or_default();
 
             Row::new(vec![
-                Line::from(Span::styled(format!(" {key}"), key_style)),
-                Line::from(Span::styled(value_display, value_style)),
+                Line::from(Span::styled(
+                    format!(" {name}"),
+                    base.add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(config_display, value_style)),
             ])
             .style(base)
         })
         .collect();
 
-    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Min(16)])
+    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Fill(2)])
         .block(block)
         .column_spacing(2);
 
@@ -632,7 +618,7 @@ fn render_help_line(frame: &mut Frame, app: &App, area: Rect) {
         } else if section.is_split_panel() {
             match app.mcp_focus {
                 McpFocus::Configs => {
-                    " Enter: edit | e: $EDITOR | r: reset | ↓: permissions | Tab: sidebar"
+                    " Enter: edit | a: add | d: delete | e: $EDITOR | ↓: permissions | Tab: sidebar"
                         .to_string()
                 }
                 McpFocus::Permissions => {
@@ -699,6 +685,7 @@ fn render_text_input_overlay(frame: &mut Frame, app: &App) {
         InputMode::EnteringCustomValue => " Enter Value (Enter to save, Esc to cancel) ",
         InputMode::EnteringPermissionTool => " Enter Tool Name (Enter to confirm, Esc to cancel) ",
         InputMode::EnteringDelegateTo => " Enter Program Name (Enter to confirm, Esc to cancel) ",
+        InputMode::EnteringMcpServerName => " Enter Server Name (Enter to confirm, Esc to cancel) ",
         InputMode::EnteringMcpMatchField => {
             " Enter Match Field e.g. command, url (Enter to confirm, Esc to cancel) "
         }
