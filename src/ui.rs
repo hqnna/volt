@@ -525,7 +525,7 @@ fn format_value(setting_type: SettingType, value: &Value) -> String {
             if s.is_empty() {
                 "(empty)".to_string()
             } else {
-                format!("\"{}\"", s)
+                s.to_string()
             }
         }
         SettingType::Number => match value.as_f64() {
@@ -571,7 +571,7 @@ fn format_value(setting_type: SettingType, value: &Value) -> String {
 /// Formats a JSON value compactly for display.
 fn format_json_compact(value: &Value) -> String {
     match value {
-        Value::String(s) => format!("\"{}\"", s),
+        Value::String(s) => s.clone(),
         Value::Bool(b) => {
             if *b {
                 "[✓]".to_string()
@@ -865,7 +865,7 @@ mod tests {
     fn test_format_value_string() {
         assert_eq!(
             format_value(SettingType::String, &Value::String("hello".into())),
-            "\"hello\""
+            "hello"
         );
         assert_eq!(
             format_value(SettingType::String, &Value::String(String::new())),
@@ -950,10 +950,7 @@ mod tests {
     fn test_format_json_compact() {
         assert_eq!(format_json_compact(&Value::Null), "null");
         assert_eq!(format_json_compact(&Value::Bool(true)), "[✓]");
-        assert_eq!(
-            format_json_compact(&Value::String("test".into())),
-            "\"test\""
-        );
+        assert_eq!(format_json_compact(&Value::String("test".into())), "test");
     }
 
     #[test]
@@ -964,7 +961,7 @@ mod tests {
                 Value::String("a".into()),
                 Value::String("b".into())
             ])),
-            "[\"a\", \"b\"]"
+            "[a, b]"
         );
     }
 
