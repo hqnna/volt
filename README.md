@@ -5,6 +5,8 @@
 
 An ergonomic terminal settings editor for the [Amp](https://ampcode.com) coding agent.
 
+![screenshot](./assets/screenshot.png)
+
 ## Installation
 
 You can download pre-built binaries from the [releases] page.
