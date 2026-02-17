@@ -426,12 +426,33 @@ impl App {
             },
             SettingEntry::Unknown(key) => {
                 let value = self.config.get(key);
-                Some(EditorRequest {
-                    key: key.clone(),
-                    value,
-                    array_index: None,
-                    object_key: None,
-                })
+                match &value {
+                    Value::Bool(b) => {
+                        self.config.set(key, Value::Bool(!b));
+                        None
+                    }
+                    Value::String(_) | Value::Number(_) => {
+                        self.input_mode = InputMode::EditingValue;
+                        self.edit_buffer = match &value {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        };
+                        None
+                    }
+                    Value::Array(_) => {
+                        self.status_message = Some(
+                            "Press 'a' to add, 'd' to delete, 'e' to edit in $EDITOR.".to_string(),
+                        );
+                        None
+                    }
+                    _ => Some(EditorRequest {
+                        key: key.clone(),
+                        value,
+                        array_index: None,
+                        object_key: None,
+                    }),
+                }
             }
         }
     }
@@ -567,6 +588,11 @@ impl App {
     /// Adds an item to a string array setting (prompts for value via edit buffer).
     pub fn add_array_item(&mut self) {
         if self.current_section() == Section::Advanced {
+            // If the selected entry is an unknown array, add an item to it instead.
+            if let Some(key) = self.selected_unknown_array_key() {
+                self.add_unknown_array_item(&key);
+                return;
+            }
             self.start_add_custom_key();
             return;
         }
@@ -624,6 +650,25 @@ impl App {
         }
 
         let section = self.current_section();
+
+        // Handle unknown array keys in Advanced section.
+        if let Some(key) = self.selected_unknown_array_key() {
+            let mut arr = self
+                .config
+                .get(&key)
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if arr.is_empty() {
+                self.status_message = Some("Array is already empty.".to_string());
+            } else {
+                arr.pop();
+                self.config.set(&key, Value::Array(arr));
+                self.status_message = Some(format!("Removed last item from {key}"));
+            }
+            return;
+        }
+
         let def = self.selected_array_def();
         let Some(def) = def else {
             return;
@@ -680,6 +725,23 @@ impl App {
         }
     }
 
+    /// Returns the key of the selected unknown entry if its value is an array.
+    fn selected_unknown_array_key(&self) -> Option<String> {
+        let entries = self.current_settings();
+        let entry = entries.get(self.selected_setting)?;
+        match entry {
+            SettingEntry::Unknown(key) if self.config.get(key).is_array() => Some(key.clone()),
+            _ => None,
+        }
+    }
+
+    /// Adds a string item to an unknown array key via the edit buffer.
+    fn add_unknown_array_item(&mut self, key: &str) {
+        let _ = key;
+        self.input_mode = InputMode::EditingValue;
+        self.edit_buffer.clear();
+    }
+
     /// Cycles through enum options for a StringEnum setting.
     fn cycle_enum(&mut self, def: &settings::SettingDef) {
         let Some(options) = def.enum_options else {
@@ -719,79 +781,117 @@ impl App {
             return;
         };
 
-        let SettingEntry::Known(def) = entry else {
-            return;
-        };
-
-        match def.setting_type {
-            SettingType::ArrayString => {
-                if !self.edit_buffer.is_empty() {
-                    let mut arr = self
-                        .config
-                        .get(def.key)
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    arr.push(Value::String(self.edit_buffer.clone()));
-                    self.config.set(def.key, Value::Array(arr));
-                    self.status_message = Some(format!("Added item to {}", def.key));
-                }
-                self.edit_buffer.clear();
-                return;
-            }
-            SettingType::ArrayObject => {
-                if !self.edit_buffer.is_empty() {
-                    match serde_json::from_str::<Value>(&self.edit_buffer) {
-                        Ok(val) if val.is_object() => {
+        match entry {
+            SettingEntry::Known(def) => {
+                match def.setting_type {
+                    SettingType::ArrayString => {
+                        if !self.edit_buffer.is_empty() {
                             let mut arr = self
                                 .config
                                 .get(def.key)
                                 .as_array()
                                 .cloned()
                                 .unwrap_or_default();
-                            arr.push(val);
+                            arr.push(Value::String(self.edit_buffer.clone()));
                             self.config.set(def.key, Value::Array(arr));
                             self.status_message = Some(format!("Added item to {}", def.key));
                         }
-                        Ok(_) => {
-                            self.status_message = Some("Value must be a JSON object".to_string());
-                        }
-                        Err(e) => {
-                            self.status_message = Some(format!("Invalid JSON: {e}"));
-                        }
-                    }
-                }
-                self.edit_buffer.clear();
-                return;
-            }
-            _ => {}
-        }
-
-        let value = match def.setting_type {
-            SettingType::Number => {
-                if let Ok(n) = self.edit_buffer.parse::<i64>() {
-                    Value::Number(n.into())
-                } else if let Ok(n) = self.edit_buffer.parse::<f64>() {
-                    if let Some(n) = serde_json::Number::from_f64(n) {
-                        Value::Number(n)
-                    } else {
-                        self.status_message = Some("Invalid number".to_string());
+                        self.edit_buffer.clear();
                         return;
                     }
-                } else {
-                    self.status_message = Some("Invalid number".to_string());
+                    SettingType::ArrayObject => {
+                        if !self.edit_buffer.is_empty() {
+                            match serde_json::from_str::<Value>(&self.edit_buffer) {
+                                Ok(val) if val.is_object() => {
+                                    let mut arr = self
+                                        .config
+                                        .get(def.key)
+                                        .as_array()
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    arr.push(val);
+                                    self.config.set(def.key, Value::Array(arr));
+                                    self.status_message =
+                                        Some(format!("Added item to {}", def.key));
+                                }
+                                Ok(_) => {
+                                    self.status_message =
+                                        Some("Value must be a JSON object".to_string());
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!("Invalid JSON: {e}"));
+                                }
+                            }
+                        }
+                        self.edit_buffer.clear();
+                        return;
+                    }
+                    _ => {}
+                }
+
+                let value = match def.setting_type {
+                    SettingType::Number => {
+                        if let Ok(n) = self.edit_buffer.parse::<i64>() {
+                            Value::Number(n.into())
+                        } else if let Ok(n) = self.edit_buffer.parse::<f64>() {
+                            if let Some(n) = serde_json::Number::from_f64(n) {
+                                Value::Number(n)
+                            } else {
+                                self.status_message = Some("Invalid number".to_string());
+                                return;
+                            }
+                        } else {
+                            self.status_message = Some("Invalid number".to_string());
+                            return;
+                        }
+                    }
+                    _ => Value::String(self.edit_buffer.clone()),
+                };
+
+                if let Err(e) = Config::validate_value(def.key, &value) {
+                    self.status_message = Some(e.to_string());
                     return;
                 }
+
+                self.config.set(def.key, value);
             }
-            _ => Value::String(self.edit_buffer.clone()),
-        };
-
-        if let Err(e) = Config::validate_value(def.key, &value) {
-            self.status_message = Some(e.to_string());
-            return;
+            SettingEntry::Unknown(key) => {
+                let current = self.config.get(key);
+                match &current {
+                    Value::Array(_) => {
+                        if !self.edit_buffer.is_empty() {
+                            let mut arr = current.as_array().cloned().unwrap_or_default();
+                            arr.push(Value::String(self.edit_buffer.clone()));
+                            self.config.set(key, Value::Array(arr));
+                            self.status_message = Some(format!("Added item to {key}"));
+                        }
+                        self.edit_buffer.clear();
+                        return;
+                    }
+                    _ => {
+                        let value = match &current {
+                            Value::Number(_) => {
+                                if let Ok(n) = self.edit_buffer.parse::<i64>() {
+                                    Value::Number(n.into())
+                                } else if let Ok(n) = self.edit_buffer.parse::<f64>() {
+                                    if let Some(n) = serde_json::Number::from_f64(n) {
+                                        Value::Number(n)
+                                    } else {
+                                        self.status_message = Some("Invalid number".to_string());
+                                        return;
+                                    }
+                                } else {
+                                    self.status_message = Some("Invalid number".to_string());
+                                    return;
+                                }
+                            }
+                            _ => Value::String(self.edit_buffer.clone()),
+                        };
+                        self.config.set(key, value);
+                    }
+                }
+            }
         }
-
-        self.config.set(def.key, value);
         self.edit_buffer.clear();
     }
 
@@ -1693,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_key_returns_editor_request() {
+    fn test_unknown_key_array_shows_status() {
         let mut app = test_app();
         app.selected_section = 4; // Advanced
         app.focus = Focus::Settings;
@@ -1701,8 +1801,51 @@ mod tests {
         assert!(!entries.is_empty());
         app.selected_setting = 0;
         let req = app.activate_setting();
+        assert!(req.is_none());
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn test_unknown_key_object_returns_editor_request() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, r#"{{"amp.experimental.obj": {{"key": "val"}}}}"#).unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+        app.selected_setting = 0;
+        let req = app.activate_setting();
         assert!(req.is_some());
-        assert_eq!(req.unwrap().key, "amp.experimental.modes");
+        assert_eq!(req.unwrap().key, "amp.experimental.obj");
+    }
+
+    #[test]
+    fn test_unknown_key_bool_toggles() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, r#"{{"amp.experimental.flag": true}}"#).unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+        app.selected_setting = 0;
+        let req = app.activate_setting();
+        assert!(req.is_none());
+        assert_eq!(app.config.get("amp.experimental.flag"), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_unknown_key_string_opens_editor() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, r#"{{"amp.experimental.name": "test"}}"#).unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
+        app.selected_section = 4; // Advanced
+        app.focus = Focus::Settings;
+        app.selected_setting = 0;
+        let req = app.activate_setting();
+        assert!(req.is_none());
+        assert_eq!(app.input_mode, InputMode::EditingValue);
+        assert_eq!(app.edit_buffer, "test");
     }
 
     fn test_app_with_permissions() -> App {
@@ -1978,7 +2121,12 @@ mod tests {
 
     #[test]
     fn test_add_custom_key_full_flow_string() {
-        let mut app = test_app();
+        // Use an app with a non-array unknown key so add_array_item starts the
+        // "add custom key" flow instead of trying to add to an existing array.
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, r#"{{"amp.experimental.flag": true}}"#).unwrap();
+        let config = Config::load(f.path()).unwrap();
+        let mut app = App::new(config);
         app.selected_section = 4; // Advanced
         app.focus = Focus::Settings;
 
