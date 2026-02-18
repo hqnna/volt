@@ -24,5 +24,5 @@ $ nix build github:hqnna/volt#volt-static
 Or if you would rather use local toolchains, you can use `cargo` instead.
 
 ```console
-cargo install --git https://github.com/hqnna/volt
+$ cargo install --git https://github.com/hqnna/volt
 ```
