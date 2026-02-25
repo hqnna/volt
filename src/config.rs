@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use json_comments::StripComments;
 use serde_json::{Map, Value};
 
 use crate::settings::{self, SettingType};
@@ -30,7 +31,8 @@ impl Config {
             if contents.trim().is_empty() {
                 BTreeMap::new()
             } else {
-                let parsed: Map<String, Value> = serde_json::from_str(&contents)
+                let stripped = StripComments::new(contents.as_bytes());
+                let parsed: Map<String, Value> = serde_json::from_reader(stripped)
                     .with_context(|| format!("parsing {}", path.display()))?;
                 parsed.into_iter().collect()
             }
@@ -213,6 +215,25 @@ mod tests {
             config.get("amp.tools.stopTimeout"),
             Value::Number(300.into())
         );
+    }
+
+    #[test]
+    fn test_load_jsonc_with_comments() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"{{
+    // Line comment
+    "amp.showCosts": true,
+    /* Block comment */
+    "amp.notifications.enabled": false
+}}"#
+        )
+        .unwrap();
+
+        let config = Config::load(f.path()).unwrap();
+        assert_eq!(config.get("amp.showCosts"), Value::Bool(true));
+        assert_eq!(config.get("amp.notifications.enabled"), Value::Bool(false));
     }
 
     #[test]
